@@ -1,7 +1,8 @@
 # Waste Management System
 
+![Website Preview 2](https://github.com/Varshithays/EcoGuard/blob/03ef91abd9ef35139cd8302d87d1c2542cfe2bf7/waste%20image.png)
 ![Website Preview 1](https://github.com/Varshithays/EcoGuard/blob/e67e62db5596527139eeb7e186106127fcbf1df3/Screenshot%202023-09-10%20194243.png)
-![Website Preview 2](preview_images/preview2.png)
+
 
 
 ## Overview
