@@ -1,6 +1,6 @@
 # Waste Management System
 
-![Website Preview 1](preview_images/preview1.png)
+![Website Preview 1](waste.png)
 ![Website Preview 2](preview_images/preview2.png)
 
 
