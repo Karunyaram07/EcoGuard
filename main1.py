@@ -443,6 +443,9 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin, login_user, logout_user, LoginManager, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
+import os
+from werkzeug.utils import secure_filename
+
 
 # app setup
 app = Flask(__name__)
@@ -567,6 +570,16 @@ def logout():
     return redirect(url_for('login'))
 
 # --------------------- USER COMPLAINT ROUTES ---------------------
+
+
+
+UPLOAD_FOLDER = 'static/uploads'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 @app.route('/Complaint', methods=['GET', 'POST'])
 @login_required
 def Complaint():
@@ -574,18 +587,33 @@ def Complaint():
         email = request.form.get('email')
         message = request.form.get('message')
         date = request.form.get('date')
-        image = request.form.get('image')
+        file = request.files.get('image')
 
-        if not email or not message or not date:
-            flash("Please fill required fields", "danger")
+        # validate all fields
+        if not email or not message or not date or not file:
+            flash("All fields including image are required", "danger")
             return render_template('Complaint.html')
 
-        new_complaint = Complaints(email=email, message=message, date=date, image=image)
+        # validate file
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            if not os.path.exists(app.config['UPLOAD_FOLDER']):
+                os.makedirs(app.config['UPLOAD_FOLDER'])
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(file_path)
+        else:
+            flash("Invalid file type. Allowed types: jpg, jpeg, png, pdf", "danger")
+            return render_template('Complaint.html')
+
+        # save complaint
+        new_complaint = Complaints(email=email, message=message, date=date, image=filename)
         db.session.add(new_complaint)
         db.session.commit()
         flash("Complaint submitted successfully!", "primary")
         return redirect(url_for('prcomplaint'))
+
     return render_template('Complaint.html')
+
 
 @app.route('/prcomplaint')
 @login_required
