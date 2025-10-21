@@ -10,6 +10,7 @@ from flask_mail import Mail
 
 
 
+
 #db connection
 local_server=True
 app=Flask(__name__)
@@ -24,7 +25,8 @@ def load_user(user_id):
     
     
     
-app.config['SQLALCHEMY_DATABASE_URI']='mysql://root:@localhost/msw'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:Karunyaram%4007@localhost:3306/msw'
+
 db=SQLAlchemy(app)
 
 
@@ -50,6 +52,7 @@ class Complaints(db.Model):
     message=db.Column(db.String(50))
     date=db.Column(db.String(50),nullable=False)
     image=db.Column(db.String(50))
+    status = db.Column(db.String(20), default='Submitted')
     
     
 # to pass endpoints
@@ -65,30 +68,37 @@ def test():
 def home():
         return render_template('home.html')
 
-@app.route('/signup',methods=['POST','GET'])
+@app.route('/signup', methods=['POST','GET'])
 def signup():
     if request.method == "POST":
-        username=request.form.get('username')
-        email=request.form.get('email')
-        password=request.form.get('password')
-        user=User.query.filter_by(email=email).first()
+        username = request.form.get('username')
+        email = request.form.get('email')
+        password = request.form.get('password')
+
+        # Validate inputs
+        if not username or not email or not password:
+            flash("All fields are required!", "danger")
+            return render_template('signup.html')
+
+        # Check if user already exists
+        user = User.query.filter_by(email=email).first()
         if user:
-            flash("Email Already Exist","warning")
-            return render_template('/signup.html')
-        encpassword=generate_password_hash(password)
+            flash("Email Already Exists", "warning")
+            return render_template('signup.html')
 
-        new_user=db.engine.execute(f"INSERT INTO `user` (`username`,`email`,`password`) VALUES ('{username}','{email}','{encpassword}')")
+        # Encrypt password
+        encpassword = generate_password_hash(password)
 
-        # this is method 2 to save data in db
-        # newuser=User(username=username,email=email,password=encpassword)
-        # db.session.add(newuser)
-        # db.session.commit()
-        flash("Signup Succes Please Login","success")
+        # Use ORM to add user safely
+        new_user = User(username=username, email=email, password=encpassword)
+        db.session.add(new_user)
+        db.session.commit()
+
+        flash("Signup Successful! Please Login", "success")
         return render_template('login.html')
 
-          
-
     return render_template('signup.html')
+
 
 
 @app.route('/login',methods=['POST','GET'])
@@ -121,9 +131,11 @@ def logout():
 @app.route('/prcomplaint')
 @login_required
 def prcomplaint():
-    c_email=current_user.email
-    comp=db.engine.execute(f"SELECT * FROM `complaints` WHERE email='{c_email}'")
-    return render_template('prcomplaint.html',comp=comp)
+    c_email = current_user.email
+    # Use SQLAlchemy ORM query
+    comp = Complaints.query.filter_by(email=c_email).all()
+    return render_template('prcomplaint.html', comp=comp)
+
 
 @app.route('/Complaint',methods=['POST','GET'])
 @login_required
@@ -133,13 +145,21 @@ def Complaint():
         message=request.form.get('message')
         date=request.form.get('date')
         image=request.form.get('image')
-        query=db.engine.execute(f"INSERT INTO `complaints` (`email`,`message`,`date`,`image`) VALUES ('{email}','{message}','{date}','{image}')")
+        new_complaint = new_complaint = Complaints(
+    email=email,
+    message=message,
+    date=date,
+    image=image,
+    status="Submitted"
+)
+
+        db.session.add(new_complaint)
+        db.session.commit()
 
 
 
 
     flash("Complaint Submited Thank you!","primary")
-
 
     return render_template('Complaint.html')
 
@@ -153,21 +173,29 @@ def area():
         return render_template('login.html')
     return render_template('areadetails.html')
 
-@app.route("/edit/<string:cid>",methods=['POST','GET'])
+@app.route("/edit/<string:cid>", methods=['POST','GET'])
 @login_required
 def edit(cid):
-    posts=Complaints.query.filter_by(cid=cid).first()
-    if request.method=="POST":
-        email=request.form.get('email')
-        message=request.form.get('message')
-        date=request.form.get('date')
-        image=request.form.get('image')
-        query= db.engine.execute(f"UPDATE `complaints` SET `email` = '{email}', `meassage` = '{message}', `date` = '{date}', `image` = '{image}',   WHERE `complaints`.`cid` = {cid}")
-        flash("Slot is Updates","success")
-        return redirect('/complaint')
-    
-    return render_template('edit.html',query=query)
+    posts = Complaints.query.filter_by(cid=cid).first()
+
+    if request.method == "POST":
+        email = request.form.get('email')
+        message = request.form.get('message')
+        date = request.form.get('date')
+        image = request.form.get('image')
+
+        posts.email = email
+        posts.message = message
+        posts.date = date
+        posts.image = image
+
+        db.session.commit()
+        flash("Complaint Updated", "success")
+        return redirect('/prcomplaint')  # redirect to list of complaints
+
+    # pass 'posts' to template for GET request
+    return render_template('edit.html', posts=posts)
+
 
 app.run(debug=True)
 
-#
