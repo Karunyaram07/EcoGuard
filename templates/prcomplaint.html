@@ -1,26 +1,26 @@
-{% extends 'base.html' %} {% block title %} Preview Complaints {% endblock title
-%} {% block body %} {% with messages =
-get_flashed_messages(with_categories=true) %} {% if messages %} {% for category,
-message in messages %}
-<div
-  class="alert alert-{{ category }} alert-dismissible fade show"
-  role="alert"
->
-  {{ message }}
-  <button type="button" class="close" data-dismiss="alert" aria-label="Close">
-    <span aria-hidden="true">&times;</span>
-  </button>
-</div>
-{% endfor %} {% endif %} {% endwith %}
+{% extends 'base.html' %}
+{% block title %} Preview Complaints {% endblock title %}
+{% block body %}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+      </div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
+
 <table class="table table-bordered">
-  <thead class="thead-danger">
+  <thead class="thead-light">
     <tr>
-      <th scope="col">STATUS</th>
       <th scope="col">CID</th>
       <th scope="col">EMAIL</th>
       <th scope="col">MESSAGE</th>
       <th scope="col">DATE</th>
       <th scope="col">IMAGE</th>
+      <th scope="col">STATUS</th>
       <th scope="col">EDIT</th>
       <th scope="col">DELETE</th>
     </tr>
@@ -28,24 +28,27 @@ message in messages %}
   <tbody>
     {% for post in comp %}
     <tr>
-      <th scope="row">{{ post.cid }}</th>
+      <td>{{ post.cid }}</td>
       <td>{{ post.email }}</td>
       <td>{{ post.message }}</td>
       <td>{{ post.date }}</td>
       <td>{{ post.image }}</td>
       <td>{{ post.status }}</td>
       <td>
-        <a href="/edit/{{ post.cid }}">
-          <button class="btn btn-primary">Edit</button>
-        </a>
+        {% if current_user.is_admin or post.email == current_user.email %}
+        <a href="{{ url_for('edit', cid=post.cid) }}"><button class="btn btn-primary">Edit</button></a>
+        {% else %}
+        <button class="btn btn-secondary" disabled>Edit</button>
+        {% endif %}
       </td>
       <td>
-        <a
-          href="/delete/{{ post.cid }}"
-          onclick="return confirm('Are you sure to Delete complaint')"
-        >
+        {% if current_user.is_admin or post.email == current_user.email %}
+        <a href="{{ url_for('delete', cid=post.cid) }}" onclick="return confirm('Are you sure to Delete complaint?')">
           <button class="btn btn-danger">Delete</button>
         </a>
+        {% else %}
+        <button class="btn btn-secondary" disabled>Delete</button>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}

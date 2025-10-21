@@ -1,8 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}
-Edit Complaint
-{% endblock title %}
+{% block title %} Edit Complaint {% endblock title %}
 
 {% block body %}
 
@@ -41,13 +39,26 @@ Edit Complaint
         </div>
 
         <div class="form-group">
+            <label for="image" class="font-weight-bold">Image (path or filename)</label>
+            <input type="text" class="form-control" id="image" name="image" value="{{ posts.image }}">
+        </div>
+
+        {% if current_user.is_admin %}
+        <div class="form-group">
             <label for="status" class="font-weight-bold">Status</label>
-            <select class="form-control" id="status" name="status" required>
+            <select class="form-control" id="status" name="status">
                 <option value="Submitted" {% if posts.status == "Submitted" %}selected{% endif %}>Submitted</option>
                 <option value="In Progress" {% if posts.status == "In Progress" %}selected{% endif %}>In Progress</option>
                 <option value="Completed" {% if posts.status == "Completed" %}selected{% endif %}>Completed</option>
             </select>
         </div>
+        {% else %}
+        <div class="form-group">
+            <label class="font-weight-bold">Status</label>
+            <input type="text" class="form-control" value="{{ posts.status }}" readonly>
+            <small class="form-text text-muted">Only admin can change status.</small>
+        </div>
+        {% endif %}
 
         <button type="submit" class="btn btn-success btn-block" onclick="return confirm('Update complaint?')">Update</button>
     </form>
