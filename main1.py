@@ -650,21 +650,29 @@ def update_status(cid):
 @login_required
 def edit(cid):
     complaint = Complaints.query.get_or_404(cid)
-    if not current_user.is_admin and complaint.email != current_user.email:
-        abort(403)
+
+    # Only allow admin to edit
+    if not current_user.is_admin:
+        abort(403)  # normal users cannot edit
 
     if request.method == "POST":
+        # Admin can edit message, date, image, and status
         message = request.form.get('message')
         date = request.form.get('date')
         image = request.form.get('image')
+        status = request.form.get('status')
+
         if message: complaint.message = message
         if date: complaint.date = date
         if image: complaint.image = image
+        if status: complaint.status = status
+
         db.session.commit()
         flash("Complaint updated successfully", "success")
-        return redirect(url_for('admin_dashboard' if current_user.is_admin else 'prcomplaint'))
+        return redirect(url_for('admin_dashboard'))
 
     return render_template('edit.html', posts=complaint)
+
 
 @app.route('/delete/<int:cid>', methods=['GET', 'POST'])
 @login_required

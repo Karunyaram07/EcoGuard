@@ -3,7 +3,6 @@
 {% block title %} Edit Complaint {% endblock title %}
 
 {% block body %}
-
 <div class="container mt-4">
     <h2 class="text-center bg-primary text-white p-2">Edit Complaint</h2>
     <br>
@@ -21,29 +20,28 @@
         {% endif %}
     {% endwith %}
 
+    {% if current_user.is_admin %}
     <form action="" method="POST" class="jumbotron">
-
         <div class="form-group">
             <label for="email" class="font-weight-bold">Email</label>
-            <input type="email" class="form-control" id="email" name="email" value="{{ posts.email }}" required>
+            <input type="email" class="form-control" id="email" name="email" value="{{ posts.email }}" readonly>
         </div>
 
         <div class="form-group">
             <label for="message" class="font-weight-bold">Message</label>
-            <textarea class="form-control" id="message" name="message" rows="5" required>{{ posts.message }}</textarea>
+            <textarea class="form-control" id="message" name="message" rows="5">{{ posts.message }}</textarea>
         </div>
 
         <div class="form-group">
             <label for="date" class="font-weight-bold">Date</label>
-            <input type="date" class="form-control" id="date" name="date" value="{{ posts.date }}" required>
+            <input type="date" class="form-control" id="date" name="date" value="{{ posts.date }}">
         </div>
 
         <div class="form-group">
-            <label for="image" class="font-weight-bold">Image (path or filename)</label>
+            <label for="image" class="font-weight-bold">Image</label>
             <input type="text" class="form-control" id="image" name="image" value="{{ posts.image }}">
         </div>
 
-        {% if current_user.is_admin %}
         <div class="form-group">
             <label for="status" class="font-weight-bold">Status</label>
             <select class="form-control" id="status" name="status">
@@ -52,16 +50,11 @@
                 <option value="Completed" {% if posts.status == "Completed" %}selected{% endif %}>Completed</option>
             </select>
         </div>
-        {% else %}
-        <div class="form-group">
-            <label class="font-weight-bold">Status</label>
-            <input type="text" class="form-control" value="{{ posts.status }}" readonly>
-            <small class="form-text text-muted">Only admin can change status.</small>
-        </div>
-        {% endif %}
 
-        <button type="submit" class="btn btn-success btn-block" onclick="return confirm('Update complaint?')">Update</button>
+        <button type="submit" class="btn btn-success btn-block">Update</button>
     </form>
+    {% else %}
+    <div class="alert alert-warning">You are not authorized to edit this complaint.</div>
+    {% endif %}
 </div>
-
 {% endblock body %}

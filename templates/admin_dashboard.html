@@ -8,7 +8,7 @@
     <h2 class="text-center mb-4">Admin Dashboard - Validate Complaints</h2>
 
     <div class="container">
-        <table class="table table-bordered table-striped">
+        <table class="table table-bordered table-striped table-hover">
             <thead class="table-dark">
                 <tr>
                     <th>ID</th>
@@ -27,7 +27,11 @@
                     <td>{{ c.email }}</td>
                     <td>{{ c.message }}</td>
                     <td>{{ c.date }}</td>
-                    <td>{{ c.image or 'N/A' }}</td>
+                    <td>
+  <a href="{{ url_for('static', filename='uploads/' ~ c.image) }}" target="_blank">View</a>
+</td>
+
+                    
                     <td>
                         <form method="POST" action="{{ url_for('update_status', cid=c.cid) }}">
                             <select name="status" class="form-select form-select-sm">

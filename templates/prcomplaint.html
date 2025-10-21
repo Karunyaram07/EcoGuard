@@ -21,7 +21,6 @@
       <th scope="col">DATE</th>
       <th scope="col">IMAGE</th>
       <th scope="col">STATUS</th>
-      <th scope="col">EDIT</th>
       <th scope="col">DELETE</th>
     </tr>
   </thead>
@@ -32,15 +31,12 @@
       <td>{{ post.email }}</td>
       <td>{{ post.message }}</td>
       <td>{{ post.date }}</td>
-      <td>{{ post.image }}</td>
-      <td>{{ post.status }}</td>
       <td>
-        {% if current_user.is_admin or post.email == current_user.email %}
-        <a href="{{ url_for('edit', cid=post.cid) }}"><button class="btn btn-primary">Edit</button></a>
-        {% else %}
-        <button class="btn btn-secondary" disabled>Edit</button>
-        {% endif %}
-      </td>
+  <a href="{{ url_for('static', filename='uploads/' ~ post.image) }}" target="_blank">View</a>
+</td>
+
+      <td>{{ post.status }}</td>
+      
       <td>
         {% if current_user.is_admin or post.email == current_user.email %}
         <a href="{{ url_for('delete', cid=post.cid) }}" onclick="return confirm('Are you sure to Delete complaint?')">
