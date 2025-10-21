@@ -1,0 +1,10 @@
+Flask
+Flask-Login
+Flask-SQLAlchemy
+Flask-Mail
+Werkzeug
+pillow
+transformers
+torch         # Or install a CPU-only build like "torch==2.x+cpu" appropriate for your platform
+sentence-transformers  # optional if you later want duplicate detection
+python-dotenv
