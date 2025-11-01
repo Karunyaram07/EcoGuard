@@ -194,7 +194,7 @@
 # from flask_sqlalchemy import SQLAlchemy
 # from flask_login import UserMixin, login_user, logout_user, LoginManager, login_required, current_user
 # from werkzeug.security import generate_password_hash, check_password_hash
-# from datetime import datetime
+# from datetime import datetime, timedelta
 
 # # app setup
 # app = Flask(__name__)
@@ -444,7 +444,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin, login_user, logout_user, LoginManager, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask_mail import Mail, Message
 from dotenv import load_dotenv
 import os
@@ -470,8 +470,9 @@ app.config.update(
     MAIL_PORT = 587,
     MAIL_USE_TLS = True,
     MAIL_USERNAME = os.getenv("MAIL_USERNAME"),
-    MAIL_PASSWORD = os.getenv("MAIL_PASSWORD"),  # <<== set (or better: use env vars)
-    MAIL_DEFAULT_SENDER = 'youremail@example.com'
+    MAIL_PASSWORD = os.getenv("MAIL_PASSWORD"),
+    MAIL_DEFAULT_SENDER = os.getenv("MAIL_DEFAULT_SENDER", os.getenv("MAIL_USERNAME")),
+    MAIL_SUPPRESS_SEND = False
 )
 mail = Mail(app)
 
@@ -484,13 +485,26 @@ db = SQLAlchemy(app)
 
 # --- Upload config ---
 UPLOAD_FOLDER = 'static/uploads'
+NGO_PROOF_FOLDER = 'static/ngo_proofs'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['NGO_PROOF_FOLDER'] = NGO_PROOF_FOLDER
+for _folder in (UPLOAD_FOLDER, NGO_PROOF_FOLDER):
+    if not os.path.exists(_folder):
+        os.makedirs(_folder, exist_ok=True)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def save_proof(file):
+    if not file or file.filename == '':
+        return None
+    fname = secure_filename(file.filename)
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+    fname = f"{timestamp}_{fname}"
+    path = os.path.join(app.config['NGO_PROOF_FOLDER'], fname)
+    file.save(path)
+    return fname
 
 # --- Models ---
 class Test(db.Model):
@@ -504,6 +518,7 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(50), unique=True)
     password = db.Column(db.String(1000))
     is_admin = db.Column(db.Boolean, default=False)
+    is_ngo = db.Column(db.Boolean, default=False)
 
 class Complaints(db.Model):
     cid = db.Column(db.Integer, primary_key=True)
@@ -511,6 +526,7 @@ class Complaints(db.Model):
     title = db.Column(db.String(200), nullable=True)     # optional
     category = db.Column(db.String(100), nullable=True)  # AI suggested
     location = db.Column(db.String(200), nullable=True)  # optional: browser location text
+    pincode = db.Column(db.String(10), nullable=True)
     message = db.Column(db.String(1000))
     date = db.Column(db.String(50), nullable=False)
     image = db.Column(db.String(200))
@@ -519,6 +535,33 @@ class Complaints(db.Model):
     ai_confidence = db.Column(db.Float, nullable=True)
     ai_notified = db.Column(db.Boolean, default=False)
     admin_notified = db.Column(db.Boolean, default=False)
+
+class NGO(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    name = db.Column(db.String(150), nullable=False)
+    org_reg_no = db.Column(db.String(100), nullable=True)
+    approved = db.Column(db.Boolean, default=False)
+    categories = db.Column(db.String(500), nullable=True)    # comma-separated
+    coverage_pincodes = db.Column(db.String(1000), nullable=True)  # comma-separated
+    proof_file = db.Column(db.String(255), nullable=True)
+    contact_person = db.Column(db.String(120), nullable=True)
+    phone = db.Column(db.String(30), nullable=True)
+    email = db.Column(db.String(120), nullable=True)
+    notes = db.Column(db.String(500), nullable=True)
+
+class ComplaintAssignment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    complaint_id = db.Column(db.Integer, db.ForeignKey('complaints.cid'), nullable=False)
+    ngo_id = db.Column(db.Integer, db.ForeignKey('ngo.id'), nullable=False)
+    status = db.Column(db.String(30), default='Assigned')  # Assigned, Accepted, Rejected, In-Progress, Resolved
+    assigned_at = db.Column(db.DateTime, default=datetime.utcnow)
+    accepted_at = db.Column(db.DateTime, nullable=True)
+    due_at = db.Column(db.DateTime, nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    notes = db.Column(db.String(1000), nullable=True)
+    assigned_by = db.Column(db.Integer, nullable=True)
+    source = db.Column(db.String(30), default='auto')
 
 # --- login loader ---
 @login_manager.user_loader
@@ -541,10 +584,17 @@ create_admin()
 # --- AI initialization (lazy) ---
 text_classifier = None
 image_classifier = None
+image_zs_classifier = None  # CLIP zero-shot image classifier
 AI_LABELS = ["Waste Management", "Water Issue", "Electricity", "Road Damage", "Pollution", "Other"]
+# Use image labels without 'Other' for better mapping; we'll only fall back to 'Other' on low confidence
+IMAGE_LABELS_NO_OTHER = ["Waste Management", "Water Issue", "Electricity", "Road Damage", "Pollution"]
+# Thresholds
+TEXT_CAT_MIN_CONF = 0.55
+IMAGE_CAT_MIN_CONF = 0.55
+FUSION_BONUS_MATCH = 0.05  # small bonus if text top matches image top
 
 def init_ai():
-    global text_classifier, image_classifier
+    global text_classifier, image_classifier, image_zs_classifier
     if not HF_AVAILABLE:
         return
     try:
@@ -554,6 +604,9 @@ def init_ai():
         if image_classifier is None:
             # image classifier (use a general vision model)
             image_classifier = pipeline("image-classification", model="google/vit-base-patch16-224")
+        if image_zs_classifier is None:
+            # zero-shot image classification maps directly to our labels
+            image_zs_classifier = pipeline("zero-shot-image-classification", model="openai/clip-vit-base-patch32")
     except Exception as e:
         print("AI pipeline init failed:", e)
         # keep as None (graceful fallback)
@@ -586,6 +639,31 @@ def image_relevance_check(image_path):
     except Exception as e:
         print("image_relevance_check failed:", e)
         return (False, None, None)
+
+# --- helper: image category suggestion (zero-shot with CLIP) ---
+
+def classify_image_category(image_path):
+    """
+    Returns (label:str, score:float) using zero-shot image classification against IMAGE_LABELS_NO_OTHER.
+    Falls back to (None, None) if unavailable.
+    """
+    init_ai()
+    if 'image_zs_classifier' not in globals() or image_zs_classifier is None:
+        return (None, None)
+    try:
+        res = image_zs_classifier(
+            image_path,
+            candidate_labels=IMAGE_LABELS_NO_OTHER,
+            hypothesis_template="a photo related to {}"
+        )
+        # res is list sorted by score desc
+        if isinstance(res, list) and len(res) > 0:
+            top = res[0]
+            return (top.get('label'), float(top.get('score', 0.0)))
+        return (None, None)
+    except Exception as e:
+        print("classify_image_category failed:", e)
+        return (None, None)
 
 # --- helper: text category suggestion ---
 def suggest_category_from_text(text):
@@ -680,6 +758,7 @@ def Complaint():
         email = request.form.get('email')
         message = request.form.get('message')
         date = request.form.get('date')
+        pincode = request.form.get('pincode') or None
         # optional title/category fields provided by user
         title = request.form.get('title') or None
         user_category = request.form.get('category') or None
@@ -688,6 +767,9 @@ def Complaint():
         # Validate
         if not email or not message or not date or not file:
             flash("All fields including image are required", "danger")
+            return render_template('Complaint.html')
+        if not pincode:
+            flash("Pincode is required", "danger")
             return render_template('Complaint.html')
 
         if not allowed_file(file.filename):
@@ -702,16 +784,16 @@ def Complaint():
         file.save(save_path)
 
         # AI: suggest category from text (non-blocking best-effort)
-        ai_category = None
-        ai_cat_conf = None
+        text_cat = None
+        text_conf = None
         try:
             cat_res = suggest_category_from_text(message)
             if cat_res:
-                ai_category, ai_cat_conf = cat_res[0], cat_res[1]
+                text_cat, text_conf = cat_res[0], cat_res[1]
         except Exception as e:
             print("Category suggestion skipped:", e)
 
-        # AI: image relevance check
+        # AI: image relevance check (fast heuristic)
         ai_verified = False
         ai_conf = None
         ai_label = None
@@ -723,19 +805,55 @@ def Complaint():
         except Exception as e:
             print("Image relevance check skipped:", e)
 
+        # AI: image category via zero-shot (maps directly to our labels)
+        image_cat = None
+        image_conf = None
+        try:
+            image_cat, image_conf = classify_image_category(save_path)
+        except Exception as e:
+            print("Image zero-shot classification skipped:", e)
+
+        # Fuse predictions: prefer highest-confidence among text/image when >= thresholds
+        fused_cat = None
+        fused_score = -1.0
+        # apply small bonus if both agree on the same label
+        if text_cat and image_cat and text_cat == image_cat and text_conf and image_conf:
+            text_conf = min(1.0, text_conf + FUSION_BONUS_MATCH)
+            image_conf = min(1.0, image_conf + FUSION_BONUS_MATCH)
+        # consider only strong candidates
+        candidates = []
+        if text_cat and (text_conf or 0) >= TEXT_CAT_MIN_CONF:
+            candidates.append((text_cat, float(text_conf)))
+        if image_cat and (image_conf or 0) >= IMAGE_CAT_MIN_CONF:
+            candidates.append((image_cat, float(image_conf)))
+        if candidates:
+            fused_cat, fused_score = max(candidates, key=lambda x: x[1])
+        # prefer user-provided category if AI is unsure
+        final_category = fused_cat or user_category
+        # only use 'Other' if everything is low-confidence and user didn't provide category
+        if final_category is None and text_cat is not None and (text_conf or 0) < TEXT_CAT_MIN_CONF and (image_conf or 0) < IMAGE_CAT_MIN_CONF:
+            final_category = 'Other'
+
         # Build complaint record
         new_complaint = Complaints(
             email=email,
             title=title,
-            category=ai_category or user_category,
+            category=final_category,
             message=message,
             date=date,
+            pincode=pincode,
             image=filename,
             ai_verified=ai_verified,
             ai_confidence=ai_conf
         )
         db.session.add(new_complaint)
         db.session.commit()
+
+        # Auto-assign to NGO by pincode+category
+        try:
+            auto_assign_to_ngo(new_complaint)
+        except Exception as e:
+            print("auto_assign_to_ngo failed:", e)
 
         # If AI verified (green), notify user by email (only once)
         if ai_verified:
@@ -763,6 +881,19 @@ def prcomplaint():
     comp = Complaints.query.filter_by(email=current_user.email).order_by(Complaints.cid.desc()).all()
     return render_template('prcomplaint.html', comp=comp)
 
+# ---------------- template context: expose NGO name for navbar ----------------
+@app.context_processor
+def inject_current_ngo_name():
+    ngo_name = None
+    try:
+        if current_user.is_authenticated and getattr(current_user, 'is_ngo', False):
+            ngo = NGO.query.filter_by(user_id=current_user.id).first()
+            if ngo:
+                ngo_name = ngo.name
+    except Exception:
+        pass
+    return dict(current_ngo_name=ngo_name)
+
 # ---------------- admin dashboard ----------------
 @app.route('/admin_dashboard', methods=['GET', 'POST'])
 @login_required
@@ -770,7 +901,28 @@ def admin_dashboard():
     if not current_user.is_admin:
         abort(403)
     comp = Complaints.query.order_by(Complaints.cid.desc()).all()
-    return render_template('admin_dashboard.html', comp=comp)
+    ngos = NGO.query.order_by(NGO.id.desc()).all()
+    # Build latest assignment info per complaint (who updated and status)
+    complaint_ids = [c.cid for c in comp]
+    assign_map = {}
+    if complaint_ids:
+        assignments = (
+            ComplaintAssignment.query
+            .filter(ComplaintAssignment.complaint_id.in_(complaint_ids))
+            .order_by(ComplaintAssignment.updated_at.desc())
+            .all()
+        )
+        # keep latest per complaint_id
+        for a in assignments:
+            if a.complaint_id not in assign_map:
+                ngo = NGO.query.get(a.ngo_id)
+                assign_map[a.complaint_id] = {
+                    'ngo_name': (ngo.name if ngo else 'NGO #'+str(a.ngo_id)),
+                    'status': a.status,
+                    'updated_at': a.updated_at,
+                    'assignment_id': a.id,
+                }
+    return render_template('admin_dashboard.html', comp=comp, ngos=ngos, assign_map=assign_map)
 
 # update status route (admin)
 @app.route('/update_status/<int:cid>', methods=['POST'])
@@ -839,6 +991,278 @@ def delete(cid):
     db.session.commit()
     flash("Complaint deleted", "warning")
     return redirect(url_for('admin_dashboard' if current_user.is_admin else 'prcomplaint'))
+
+# ---------------- NGO: self-signup ----------------
+@app.route('/ngo/signup', methods=['GET', 'POST'])
+def ngo_signup():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        email = request.form.get('email')
+        password = request.form.get('password')
+        name = request.form.get('ngo_name')
+        org_reg_no = request.form.get('org_reg_no')
+        categories = request.form.get('categories')
+        coverage_pincodes = request.form.get('coverage_pincodes')
+        contact_person = request.form.get('contact_person')
+        phone = request.form.get('phone')
+        proof = request.files.get('proof')
+
+        if not all([username, email, password, name, coverage_pincodes]) or proof is None:
+            flash('All required fields and proof document are needed', 'danger')
+            return render_template('ngo_signup.html')
+
+        if User.query.filter_by(email=email).first():
+            flash('Email already registered', 'warning')
+            return render_template('ngo_signup.html')
+
+        encpassword = generate_password_hash(password)
+        user = User(username=username, email=email, password=encpassword, is_ngo=True)
+        db.session.add(user)
+        db.session.commit()
+
+        proof_file = save_proof(proof)
+        ngo = NGO(
+            user_id=user.id,
+            name=name,
+            org_reg_no=org_reg_no,
+            approved=False,
+            categories=(categories or None),
+            coverage_pincodes=coverage_pincodes,
+            proof_file=proof_file,
+            contact_person=contact_person,
+            phone=phone,
+            email=email
+        )
+        db.session.add(ngo)
+        db.session.commit()
+        flash('NGO registration submitted. Await admin approval.', 'success')
+        return redirect(url_for('login'))
+
+    return render_template('ngo_signup.html')
+
+
+@app.route('/pincode_map/<pincode>')
+def pincode_map(pincode):
+    # basic normalization and validation
+    pincode = (pincode or '').strip()
+    # allow only digits; optional: enforce 6 digits
+    if not pincode.isdigit() or len(pincode) != 6:
+        flash('Invalid pincode for map view', 'warning')
+        return redirect(url_for('index'))
+    return render_template('pincode_map.html', pincode=pincode)
+
+# ---------------- Admin: manage NGOs ----------------
+@app.route('/admin/ngos')
+@login_required
+def admin_ngos():
+    if not current_user.is_admin:
+        abort(403)
+    ngos = NGO.query.order_by(NGO.id.desc()).all()
+    return render_template('admin_ngos.html', ngos=ngos)
+
+@app.route('/admin/ngos/<int:ngo_id>/approve', methods=['POST'])
+@login_required
+def approve_ngo(ngo_id):
+    if not current_user.is_admin:
+        abort(403)
+    ngo = NGO.query.get_or_404(ngo_id)
+    ngo.approved = True
+    db.session.commit()
+    # notify NGO by email
+    if ngo.email:
+        try:
+            send_user_email(ngo.email, 'Your NGO has been approved', 'Your NGO registration has been approved. You can now access the NGO Dashboard to manage assignments.')
+        except Exception as e:
+            print('NGO approval email failed:', e)
+    flash('NGO approved', 'success')
+    return redirect(request.referrer or url_for('admin_ngos'))
+
+# ---------------- NGO Dashboard ----------------
+@app.route('/ngo/dashboard')
+@login_required
+def ngo_dashboard_view():
+    if not current_user.is_ngo:
+        abort(403)
+    ngo = NGO.query.filter_by(user_id=current_user.id).first()
+    if not ngo or not ngo.approved:
+        flash('Your NGO is pending approval', 'warning')
+        return render_template('ngo_pending.html', ngo=ngo)
+    assignments = ComplaintAssignment.query.filter_by(ngo_id=ngo.id).order_by(ComplaintAssignment.assigned_at.desc()).all()
+    # Fetch complaint details for display
+    complaint_ids = [a.complaint_id for a in assignments]
+    complaints = Complaints.query.filter(Complaints.cid.in_(complaint_ids)).all() if complaint_ids else []
+    complaint_map = {c.cid: c for c in complaints}
+    return render_template('ngo_dashboard.html', assignments=assignments, complaint_map=complaint_map)
+
+# ---------------- NGO Assignment Actions ----------------
+@app.route('/ngo/assignments/<int:assign_id>/accept', methods=['POST'])
+@login_required
+def ngo_accept_assignment(assign_id):
+    if not current_user.is_ngo:
+        abort(403)
+    ngo = NGO.query.filter_by(user_id=current_user.id).first_or_404()
+    a = ComplaintAssignment.query.get_or_404(assign_id)
+    if a.ngo_id != ngo.id:
+        abort(403)
+    a.status = 'Accepted'
+    a.accepted_at = datetime.utcnow()
+    if not a.due_at:
+        a.due_at = datetime.utcnow() + timedelta(days=3)
+    db.session.commit()
+    flash('Assignment accepted', 'success')
+    return redirect(url_for('ngo_dashboard_view'))
+
+@app.route('/ngo/assignments/<int:assign_id>/reject', methods=['POST'])
+@login_required
+def ngo_reject_assignment(assign_id):
+    if not current_user.is_ngo:
+        abort(403)
+    ngo = NGO.query.filter_by(user_id=current_user.id).first_or_404()
+    a = ComplaintAssignment.query.get_or_404(assign_id)
+    if a.ngo_id != ngo.id:
+        abort(403)
+    a.status = 'Rejected'
+    db.session.commit()
+    flash('Assignment rejected', 'warning')
+    return redirect(url_for('ngo_dashboard_view'))
+
+@app.route('/ngo/assignments/<int:assign_id>/status', methods=['POST'])
+@login_required
+def ngo_update_status(assign_id):
+    if not current_user.is_ngo:
+        abort(403)
+    ngo = NGO.query.filter_by(user_id=current_user.id).first_or_404()
+    a = ComplaintAssignment.query.get_or_404(assign_id)
+    if a.ngo_id != ngo.id:
+        abort(403)
+    new_status = request.form.get('status')
+    notes = request.form.get('notes')
+    if new_status:
+        a.status = new_status
+    if notes:
+        a.notes = notes
+    db.session.commit()
+    # Notify complaint user concisely on status changes handled by NGO
+    if new_status in ('Resolved', 'In-Progress'):
+        comp = Complaints.query.get(a.complaint_id)
+        if comp and comp.email:
+            try:
+                status_text = 'resolved' if new_status == 'Resolved' else 'in progress'
+                ok = send_user_email(
+                    comp.email,
+                    f"Update: Complaint #{comp.cid} {new_status}",
+                    f"NGO {ngo.name} has marked your complaint #{comp.cid} as {status_text}."
+                )
+                flash(('User notified: ' + new_status) if ok else 'Failed to notify user', 'success' if ok else 'danger')
+            except Exception as e:
+                print('User status email failed:', e)
+                flash('Failed to notify user (exception)', 'danger')
+    flash('Assignment updated', 'success')
+    return redirect(url_for('ngo_dashboard_view'))
+
+# NGO can email the complaint user directly
+@app.route('/ngo/assignments/<int:assign_id>/email', methods=['POST'])
+@login_required
+def ngo_email_user(assign_id):
+    if not current_user.is_ngo:
+        abort(403)
+    ngo = NGO.query.filter_by(user_id=current_user.id).first_or_404()
+    a = ComplaintAssignment.query.get_or_404(assign_id)
+    if a.ngo_id != ngo.id:
+        abort(403)
+    comp = Complaints.query.get_or_404(a.complaint_id)
+    subject = request.form.get('subject') or f"Regarding your complaint #{comp.cid}"
+    body = request.form.get('body') or ""
+    ok = False
+    if comp.email:
+        try:
+            ok = send_user_email(comp.email, subject, body)
+        except Exception as e:
+            print('NGO -> user email failed:', e)
+    flash('Email sent to user' if ok else 'Failed to send email', 'success' if ok else 'danger')
+    return redirect(url_for('ngo_dashboard_view'))
+
+# ---------------- Admin: manual assignment ----------------
+@app.route('/admin/assign', methods=['POST'])
+@login_required
+def admin_assign():
+    if not current_user.is_admin:
+        abort(403)
+    complaint_id = request.form.get('complaint_id', type=int)
+    ngo_id = request.form.get('ngo_id', type=int)
+    if not complaint_id or not ngo_id:
+        flash('Complaint and NGO are required', 'danger')
+        return redirect(url_for('admin_dashboard'))
+    assign = ComplaintAssignment(
+        complaint_id=complaint_id,
+        ngo_id=ngo_id,
+        status='Assigned',
+        due_at=datetime.utcnow() + timedelta(days=3),
+        assigned_by=current_user.id,
+        source='manual'
+    )
+    db.session.add(assign)
+    db.session.commit()
+    # email NGO about the manual assignment
+    ngo = NGO.query.get(ngo_id)
+    comp = Complaints.query.get(complaint_id)
+    if ngo and ngo.email:
+        try:
+            send_user_email(ngo.email,
+                            f'New complaint assigned manually #{comp.cid if comp else complaint_id}',
+                            f'A complaint (ID: {comp.cid if comp else complaint_id}) has been assigned to your NGO.')
+        except Exception as e:
+            print('Manual assignment NGO email failed:', e)
+    flash('Complaint assigned to NGO', 'success')
+    return redirect(url_for('admin_dashboard'))
+
+# ---------------- Matching & Auto-assignment ----------------
+
+def _parse_list(csv_text):
+    if not csv_text:
+        return []
+    return [x.strip() for x in csv_text.split(',') if x.strip()]
+
+def find_candidate_ngos(category: str, pincode: str):
+    if not category or not pincode:
+        return []
+    candidates = []
+    for ngo in NGO.query.filter_by(approved=True).all():
+        cats = set(map(str.lower, _parse_list(ngo.categories))) if ngo.categories else set()
+        pins = set(_parse_list(ngo.coverage_pincodes)) if ngo.coverage_pincodes else set()
+        if (not cats or category.lower() in cats) and (not pins or pincode in pins):
+            candidates.append(ngo)
+    return candidates
+
+def auto_assign_to_ngo(complaint: Complaints):
+    try:
+        category = complaint.category
+        pincode = complaint.pincode
+        candidates = find_candidate_ngos(category, pincode)
+        if not candidates:
+            return False
+        def open_count(ngo_id):
+            return ComplaintAssignment.query.filter(ComplaintAssignment.ngo_id==ngo_id, ComplaintAssignment.status.in_(['Assigned','Accepted','In-Progress'])).count()
+        candidates.sort(key=lambda n: open_count(n.id))
+        chosen = candidates[0]
+        assign = ComplaintAssignment(
+            complaint_id=complaint.cid,
+            ngo_id=chosen.id,
+            status='Assigned',
+            due_at=datetime.utcnow() + timedelta(days=3),
+            source='auto'
+        )
+        db.session.add(assign)
+        db.session.commit()
+        if chosen.email:
+            try:
+                send_user_email(chosen.email, f"New complaint assigned #{complaint.cid}", f"A complaint in your coverage (pincode {pincode}) and category {category} has been assigned to your NGO.")
+            except Exception as e:
+                print('NGO email notify failed:', e)
+        return True
+    except Exception as e:
+        print('auto_assign_to_ngo error:', e)
+        return False
 
 # --- run ---
 if __name__ == "__main__":

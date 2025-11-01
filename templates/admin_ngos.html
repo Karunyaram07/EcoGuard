@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block title %}Manage NGOs{% endblock %}
+{% block body %}
+<div class="container mt-4">
+  <h3>NGOs</h3>
+  <table class="table table-bordered table-sm">
+    <thead>
+      <tr>
+        <th>ID</th><th>Name</th><th>Email</th><th>Approved</th><th>Categories</th><th>Pincodes</th><th>Proof</th><th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ngo in ngos %}
+      <tr>
+        <td>{{ ngo.id }}</td>
+        <td>{{ ngo.name }}</td>
+        <td>{{ ngo.email }}</td>
+        <td>{{ 'Yes' if ngo.approved else 'No' }}</td>
+        <td>{{ ngo.categories }}</td>
+        <td>{{ ngo.coverage_pincodes }}</td>
+        <td>
+          {% if ngo.proof_file %}
+          <a href="{{ url_for('static', filename='ngo_proofs/' ~ ngo.proof_file) }}" target="_blank">View</a>
+          {% endif %}
+        </td>
+        <td>
+          {% if not ngo.approved %}
+          <form method="post" action="{{ url_for('approve_ngo', ngo_id=ngo.id) }}">
+            <button class="btn btn-sm btn-success">Approve</button>
+          </form>
+          {% else %}-{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

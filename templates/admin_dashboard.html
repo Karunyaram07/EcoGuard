@@ -6,7 +6,53 @@
 </head>
 <body class="p-4 bg-light">
 
-  <h2 class="text-center mb-4">Admin Dashboard - Validate Complaints</h2>
+  <h2 class="text-center mb-4">Admin Dashboard</h2>
+
+  <div class="container mb-4">
+    <div class="row g-3">
+      <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0">
+          <div class="card-body text-center">
+            <div class="text-muted small">Total</div>
+            <div class="h4 mb-0">{{ comp|length }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0">
+          <div class="card-body text-center">
+            <div class="text-muted small">Resolved</div>
+            <div class="h4 mb-0">{{ comp|selectattr('status','equalto','Resolved')|list|length }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0">
+          <div class="card-body text-center">
+            <div class="text-muted small">In Progress</div>
+            <div class="h4 mb-0">{{ comp|selectattr('status','equalto','In Progress')|list|length }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0">
+          <div class="card-body text-center">
+            <div class="text-muted small">AI Verified</div>
+            <div class="h4 mb-0">{{ comp|selectattr('ai_verified')|list|length }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="container mb-3">
+    <div class="input-group">
+      <div class="input-group-prepend">
+        <span class="input-group-text">Search</span>
+      </div>
+      <input id="complaintSearch" type="text" class="form-control" placeholder="Search by email, message, category, pincode, NGO...">
+    </div>
+  </div>
 
   <div class="container">
     <table class="table table-bordered table-striped table-hover align-middle">
@@ -18,7 +64,9 @@
           <th>Date</th>
           <th>Image</th>
           <th>Category</th>
+          <th>Pincode</th>
           <th>AI Verification</th>
+          <th>NGO Update</th>
           <th>Update Status</th>
         </tr>
       </thead>
@@ -38,12 +86,28 @@
             {% endif %}
           </td>
           <td>{{ c.category or '—' }}</td>
+          <td>
+  {{ c.pincode or '—' }}
+  {% if c.pincode %}
+    <a href="{{ url_for('pincode_map', pincode=c.pincode) }}" target="_blank" class="ml-1">Map</a>
+  {% endif %}
+</td>
           <td class="text-center">
             {% if c.ai_verified %}
               <span class="badge bg-success">AI-Verified</span>
               <small>({{ '%.2f'|format(c.ai_confidence or 0) }})</small>
             {% else %}
               <span class="badge bg-danger">AI-Unverified</span>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            {% set info = assign_map.get(c.cid) %}
+            {% if info %}
+              <span class="badge bg-info">{{ info.status }}</span>
+              <div><small>by {{ info.ngo_name }}</small></div>
+              <div><small>{{ info.updated_at }}</small></div>
+            {% else %}
+              <span class="text-muted">No NGO update</span>
             {% endif %}
           </td>
           <td>
@@ -63,9 +127,52 @@
     </table>
   </div>
 
+
   <div class="text-center">
-    <a href="{{ url_for('logout') }}" class="btn btn-danger mt-3">Logout</a>
+    <a href="{{ url_for('logout') }}" class="btn btn-outline-danger mt-3">Logout</a>
   </div>
 
+  <div class="container mt-4">
+    <div class="card shadow-sm border-0">
+      <div class="card-header bg-white fw-bold">Manual Assignment</div>
+      <div class="card-body">
+        <form method="post" action="{{ url_for('admin_assign') }}" class="row g-3 align-items-end">
+          <div class="col-md-6">
+            <label class="form-label">Complaint</label>
+            <select name="complaint_id" class="form-select form-select-sm">
+              {% for c in comp %}
+              <option value="{{ c.cid }}">#{{ c.cid }} - {{ c.category or '—' }} - {{ c.pincode or '—' }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">NGO</label>
+            <select name="ngo_id" class="form-select form-select-sm">
+              {% for n in ngos %}
+              <option value="{{ n.id }}">{{ n.name }} ({{ n.coverage_pincodes }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-12">
+            <button class="btn btn-primary">Assign</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function(){
+      const input = document.getElementById('complaintSearch');
+      if (!input) return;
+      input.addEventListener('input', function(){
+        const term = this.value.toLowerCase();
+        document.querySelectorAll('table tbody tr').forEach(function(row){
+          const text = row.innerText.toLowerCase();
+          row.style.display = text.indexOf(term) > -1 ? '' : 'none';
+        });
+      });
+    })();
+  </script>
 </body>
 </html>

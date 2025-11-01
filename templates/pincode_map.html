@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+{% block title %}Pincode Map{% endblock %}
+{% block body %}
+<div class="container mt-3">
+  <h4>Pincode {{ pincode }} on State Map</h4>
+  <div id="map" style="height: 500px; border: 1px solid #ddd;"></div>
+  <div class="mt-2 small text-muted" id="status">Loading map…</div>
+</div>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(async function() {
+  const pincode = "{{ pincode }}";
+  const statusEl = document.getElementById('status');
+
+  // 1) Geocode pincode to lat/lng using Nominatim
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&country=India&postalcode=${encodeURIComponent(pincode)}&limit=1`;
+    const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    const data = await res.json();
+    if (!data || !data.length) { statusEl.textContent = 'Pincode not found.'; return; }
+    const lat = parseFloat(data[0].lat);
+    const lon = parseFloat(data[0].lon);
+    const displayName = data[0].display_name || '';
+    const address = data[0].address || {};
+    const stateName = address.state || '';
+
+    // 2) Init map
+    const map = L.map('map').setView([lat, lon], 8);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19}).addTo(map);
+
+    // 3) Marker for the pincode
+    const marker = L.marker([lat, lon]).addTo(map);
+    marker.bindPopup(`Pincode ${pincode}<br>${displayName}`).openPopup();
+
+    // 4) Load India states GeoJSON and highlight the matching state
+    const geoUrl = "{{ url_for('static', filename='geo/india_states.geojson') }}";
+    const gj = await fetch(geoUrl).then(r => r.json());
+
+    // Adjust this key to match your GeoJSON property name for state
+    const statePropKey = 'st_nm'; // or 'name' depending on your file
+
+    const layer = L.geoJSON(gj, {
+      style: function(f) {
+        const thisState = (f.properties[statePropKey] || '').toString().toLowerCase();
+        const target = stateName.toString().toLowerCase();
+        const isMatch = target && thisState === target;
+        return {
+          color: isMatch ? '#0d6efd' : '#999',
+          weight: isMatch ? 3 : 1,
+          fillOpacity: isMatch ? 0.2 : 0.05
+        };
+      },
+      onEachFeature: function(feature, layer) {
+        layer.bindTooltip(feature.properties[statePropKey] || 'State');
+      }
+    }).addTo(map);
+
+    // 5) Fit bounds for better view (prefer state bounds if matched)
+    let matchedBounds = null;
+    layer.eachLayer(function(l) {
+      const thisState = (l.feature.properties[statePropKey] || '').toString().toLowerCase();
+      if (thisState === stateName.toString().toLowerCase()) matchedBounds = l.getBounds();
+    });
+    if (matchedBounds) {
+      map.fitBounds(matchedBounds.pad(0.1));
+    } else {
+      map.setView([lat, lon], 8);
+    }
+
+    statusEl.textContent = stateName ? `State: ${stateName}` : 'State not available from geocoder.';
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = 'Failed to load map/geocode.';
+  }
+})();
+</script>
+{% endblock %}
