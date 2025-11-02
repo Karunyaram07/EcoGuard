@@ -8,6 +8,92 @@
 
   <h2 class="text-center mb-4">Admin Dashboard</h2>
 
+  <!-- Dedupe review + backfill controls -->
+  {% if current_user.is_admin %}
+  <div class="container mb-4">
+    <div class="d-flex justify-content-between align-items-center">
+      <h5 class="m-0">Duplicate Review</h5>
+      <div>
+        <a href="{{ url_for('admin_dedupe_review') }}" class="btn btn-sm btn-outline-secondary">Refresh candidates</a>
+        <a href="{{ url_for('admin_backfill_hashes', limit=500) }}" class="btn btn-sm btn-outline-primary">Backfill hashes (500)</a>
+      </div>
+    </div>
+    {% if dedupe_candidates is not none %}
+      {% if dedupe_candidates %}
+        <div class="accordion mt-3" id="dupAcc">
+          {% for grp in dedupe_candidates %}
+          <div class="card mb-2">
+            <div class="card-header py-2">
+              <div class="d-flex justify-content-between align-items-center">
+                <div>
+                  <span class="badge bg-info text-dark">{{ grp.type }}</span>
+                  <small class="text-muted">{{ grp.key }}</small>
+                </div>
+              </div>
+            </div>
+            <div class="card-body p-2">
+              <div class="table-responsive">
+                <table class="table table-sm table-bordered mb-2">
+                  <thead class="table-light">
+                    <tr class="text-center">
+                      <th>CID</th>
+                      <th>Email</th>
+                      <th>Pincode</th>
+                      <th>Date</th>
+                      <th>Category</th>
+                      <th>Image</th>
+                      <th>Mark duplicate of</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for c in grp['items'] %}
+                    <tr>
+                      <td class="text-center">
+            #{{ c.cid }}
+            {% if c.duplicate_of %}
+              <div><span class="badge bg-secondary">Duplicate of #{{ c.duplicate_of }}</span></div>
+            {% endif %}
+          </td>
+                      <td>{{ c.email }}</td>
+                      <td class="text-center">{{ c.pincode or '—' }}</td>
+                      <td>{{ c.date }}</td>
+                      <td>{{ c.category or '—' }}</td>
+                      <td class="text-center">
+                        {% if c.image %}
+                          <a href="{{ url_for('static', filename='uploads/' ~ c.image) }}" target="_blank">View</a>
+                        {% else %}
+                          —
+                        {% endif %}
+                      </td>
+                      <td>
+                        <form action="{{ url_for('admin_mark_duplicate') }}" method="post" class="form-inline">
+                          <input type="hidden" name="dup_id" value="{{ c.cid }}" />
+                          <select name="primary_id" class="form-control form-control-sm me-2">
+                            {% for p in grp['items'] %}
+                              {% if p.cid != c.cid %}
+                                <option value="{{ p.cid }}">#{{ p.cid }}</option>
+                              {% endif %}
+                            {% endfor %}
+                          </select>
+                          <button class="btn btn-sm btn-danger" type="submit">Mark duplicate</button>
+                        </form>
+                      </td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="alert alert-secondary mt-3">No duplicate candidates yet. Click "Backfill hashes" or submit some test duplicates, then Refresh.</div>
+      {% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+
   <div class="container mb-4">
     <div class="row g-3">
       <div class="col-6 col-md-3">
@@ -152,6 +238,9 @@
             {% endif %}
           </td>
           <td>
+            {% if c.status == 'Duplicate' or c.duplicate_of %}
+              <div class="text-muted small">Duplicate complaints cannot be updated.</div>
+            {% else %}
             <form method="POST" action="{{ url_for('update_status', cid=c.cid) }}" class="d-flex justify-content-center">
               <select name="status" class="form-select form-select-sm w-auto me-2">
                 <option value="Submitted" {% if c.status == 'Submitted' %}selected{% endif %}>Submitted</option>
@@ -161,6 +250,7 @@
               </select>
               <button type="submit" class="btn btn-primary btn-sm">Update</button>
             </form>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}

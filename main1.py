@@ -449,6 +449,7 @@ from flask_mail import Mail, Message
 from dotenv import load_dotenv
 from datetime import datetime
 from sqlalchemy.dialects.mysql import JSON, ENUM
+from sqlalchemy import func, text
 import os
 
 from sqlalchemy.dialects.mysql import JSON
@@ -456,13 +457,24 @@ load_dotenv()  # Load all variables from .env
 
 
 
-# Optional AI imports (wrapped in try/except)
+# Optional AI/ML imports (wrapped in try/except)
 try:
     from transformers import pipeline
     HF_AVAILABLE = True
 except Exception as e:
     print("Hugging Face transformers not available:", e)
     HF_AVAILABLE = False
+
+# Image processing and model imports
+try:
+    from PIL import Image
+    import imagehash
+    import torch
+    from torchvision import models
+    RESNET_AVAILABLE = True
+except Exception as e:
+    print("ResNet/PIL not available:", e)
+    RESNET_AVAILABLE = False
 
 # --- App setup ---
 app = Flask(__name__)
@@ -610,7 +622,6 @@ def _ensure_ngo_stats(ngo_id: int) -> 'NGOStats':
     return ns
 
 def award_points_unique(actor_type: str, actor_id: int, action_key: str, points: int, meta: dict | None = None):
-    # Idempotency: use action_key uniqueness per actor
     existing = GamificationEvent.query.filter_by(actor_type=actor_type, actor_id=actor_id, action=action_key).first()
     if existing:
         return False
@@ -623,13 +634,112 @@ def award_points_unique(actor_type: str, actor_id: int, action_key: str, points:
     stats.points = (stats.points or 0) + int(points)
     stats.level = _calc_level(stats.points)
     stats.last_action_at = datetime.utcnow()
-    # badges hook: implement thresholds here
     try:
         maybe_award_badges(actor_type, actor_id)
     except Exception as _e:
         pass
     db.session.commit()
     return True
+
+def _normalize_text_fp(title: str | None, message: str | None, pincode: str | None) -> str:
+    import hashlib, re
+    t = (title or '') + ' ' + (message or '') + ' ' + (pincode or '')
+    t = t.lower()
+    t = re.sub(r"\s+", " ", t).strip()
+    return hashlib.sha1(t.encode('utf-8')).hexdigest()
+
+def _md5_file(path: str) -> str | None:
+    import hashlib, os
+    if not path or not os.path.exists(path):
+        return None
+    h = hashlib.md5()
+    try:
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+def _phash_file(path: str) -> str | None:
+    if not RESNET_AVAILABLE or not path:
+        # PIL/imagehash imported in same try; reuse flag
+        pass
+    try:
+        img = Image.open(path).convert('RGB')
+        ph = imagehash.phash(img)
+        return ph.__str__()  # hex string
+    except Exception:
+        return None
+
+from rapidfuzz.distance import Hamming as _Ham  # fast hamming for hex strings of equal length
+
+def _hamming_hex(a: str, b: str) -> int:
+    try:
+        if not a or not b or len(a) != len(b):
+            return 999
+        return _Ham.distance(a, b)
+    except Exception:
+        return 999
+
+def _check_duplicate_complaint(email: str, title: str | None, message: str | None, pincode: str | None,
+                               image_filename: str | None,
+                               pre_md5: str | None = None,
+                               pre_phash: str | None = None,
+                               pre_text_fp: str | None = None):
+    from datetime import timedelta
+    import os
+    fp_new = pre_text_fp or _normalize_text_fp(title, message, pincode)
+    img_md5_new = pre_md5
+    img_phash_new = pre_phash
+    recent = (Complaints.query
+              .filter_by(email=email)
+              .order_by(Complaints.cid.desc())
+              .limit(200)
+              .all())
+    now = datetime.utcnow()
+    for c in recent:
+        # time window
+        try:
+            if c.date and (now - c.date).days > 60:
+                continue
+        except Exception:
+            pass
+        # exact text duplicate
+        try:
+            if getattr(c, 'text_fingerprint', None) and fp_new and c.text_fingerprint == fp_new:
+                return c
+        except Exception:
+            pass
+        # exact image hash
+        try:
+            if getattr(c, 'image_md5', None) and img_md5_new and c.image_md5 == img_md5_new:
+                return c
+        except Exception:
+            pass
+        # perceptual near-duplicate (phash)
+        try:
+            if getattr(c, 'image_phash', None) and img_phash_new:
+                if _hamming_hex(c.image_phash, img_phash_new) <= 5 and (not pincode or c.pincode == pincode):
+                    return c
+        except Exception:
+            pass
+        # fallback recompute when columns missing
+        if (img_md5_new is None or img_phash_new is None) and getattr(c, 'image', None):
+            old_path = os.path.join(UPLOAD_FOLDER, c.image)
+            if img_md5_new is None:
+                img_md5_new = _md5_file(os.path.join(UPLOAD_FOLDER, image_filename)) if image_filename else None
+            if img_phash_new is None:
+                img_phash_new = _phash_file(os.path.join(UPLOAD_FOLDER, image_filename)) if image_filename else None
+            if old_path and image_filename:
+                # exact MD5
+                if _md5_file(old_path) and img_md5_new and _md5_file(old_path) == img_md5_new:
+                    return c
+                # phash compare
+                old_ph = _phash_file(old_path)
+                if old_ph and img_phash_new and _hamming_hex(old_ph, img_phash_new) <= 5 and (not pincode or c.pincode == pincode):
+                    return c
+    return None
 
 def maybe_award_badges(actor_type: str, actor_id: int):
     """Award badges based on accumulated events/stats.
@@ -695,7 +805,6 @@ def maybe_award_badges(actor_type: str, actor_id: int):
                     except Exception:
                         pass
         # Streaks: simple daily streaks (3 and 7 days) based on recent submit events
-        from sqlalchemy import func
         today = datetime.utcnow().date()
         # count distinct dates for last N days
         def distinct_days(n):
@@ -814,6 +923,10 @@ class Complaints(db.Model):
     ai_confidence = db.Column(db.Float, nullable=True)
     ai_notified = db.Column(db.Boolean, default=False)
     admin_notified = db.Column(db.Boolean, default=False)
+    # Dedupe helpers (nullable; added via manual ALTERs)
+    image_md5 = db.Column(db.String(32), nullable=True)
+    image_phash = db.Column(db.String(32), nullable=True)
+    text_fingerprint = db.Column(db.String(40), nullable=True)
     points_awarded = db.Column(JSON, nullable=True)  # if MySQL JSON not supported, we will fallback to TEXT in DB
 class NGO(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -864,31 +977,40 @@ create_admin()
 text_classifier = None
 image_classifier = None
 image_zs_classifier = None  # CLIP zero-shot image classifier
+resnet_model = None
+resnet_weights = None
+resnet_categories = None
 AI_LABELS = ["Waste Management", "Water Issue", "Electricity", "Road Damage", "Pollution", "Other"]
 # Use image labels without 'Other' for better mapping; we'll only fall back to 'Other' on low confidence
 IMAGE_LABELS_NO_OTHER = ["Waste Management", "Water Issue", "Electricity", "Road Damage", "Pollution"]
 # Thresholds
 TEXT_CAT_MIN_CONF = 0.55
 IMAGE_CAT_MIN_CONF = 0.55
+RESNET_MIN_CONF = 0.55
 FUSION_BONUS_MATCH = 0.05  # small bonus if text top matches image top
 
 def init_ai():
-    global text_classifier, image_classifier, image_zs_classifier
-    if not HF_AVAILABLE:
-        return
-    try:
-        if text_classifier is None:
-            # zero-shot classification is flexible (no training)
-            text_classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-        if image_classifier is None:
-            # image classifier (use a general vision model)
-            image_classifier = pipeline("image-classification", model="google/vit-base-patch16-224")
-        if image_zs_classifier is None:
-            # zero-shot image classification maps directly to our labels
-            image_zs_classifier = pipeline("zero-shot-image-classification", model="openai/clip-vit-base-patch32")
-    except Exception as e:
-        print("AI pipeline init failed:", e)
-        # keep as None (graceful fallback)
+    global text_classifier, image_classifier, image_zs_classifier, resnet_model, resnet_weights, resnet_categories
+    if HF_AVAILABLE:
+        try:
+            if text_classifier is None:
+                text_classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+            if image_classifier is None:
+                image_classifier = pipeline("image-classification", model="google/vit-base-patch16-224")
+            if image_zs_classifier is None:
+                image_zs_classifier = pipeline("zero-shot-image-classification", model="openai/clip-vit-base-patch32")
+        except Exception as e:
+            print("AI pipeline init failed:", e)
+    if RESNET_AVAILABLE:
+        try:
+            if resnet_model is None:
+                weights = models.ResNet50_Weights.DEFAULT
+                resnet_model = models.resnet50(weights=weights)
+                resnet_model.eval()
+                resnet_weights = weights
+                resnet_categories = weights.meta.get('categories', None)
+        except Exception as e:
+            print("ResNet init failed:", e)
 
 # --- helper: simple image relevance check ---
 def image_relevance_check(image_path):
@@ -935,7 +1057,6 @@ def classify_image_category(image_path):
             candidate_labels=IMAGE_LABELS_NO_OTHER,
             hypothesis_template="a photo related to {}"
         )
-        # res is list sorted by score desc
         if isinstance(res, list) and len(res) > 0:
             top = res[0]
             return (top.get('label'), float(top.get('score', 0.0)))
@@ -943,6 +1064,43 @@ def classify_image_category(image_path):
     except Exception as e:
         print("classify_image_category failed:", e)
         return (None, None)
+
+# --- helper: ResNet50 classification + mapping to app categories ---
+
+def _resnet_predict(image_path):
+    init_ai()
+    if resnet_model is None or resnet_weights is None:
+        return (None, None)
+    try:
+        preprocess = resnet_weights.transforms()
+        img = Image.open(image_path).convert('RGB')
+        batch = preprocess(img).unsqueeze(0)
+        with torch.no_grad():
+            out = resnet_model(batch)
+            prob = torch.nn.functional.softmax(out[0], dim=0)
+            score, idx = torch.max(prob, dim=0)
+            score = float(score.item())
+            label = resnet_categories[int(idx.item())] if resnet_categories else str(int(idx.item()))
+        return (label, score)
+    except Exception as e:
+        print("ResNet prediction failed:", e)
+        return (None, None)
+
+def _map_imagenet_to_app(label: str) -> str | None:
+    if not label:
+        return None
+    L = label.lower()
+    if any(k in L for k in ["trash","garbage","rubbish","dump","litter","landfill","bin"]):
+        return "Waste Management"
+    if any(k in L for k in ["water","flood","leak","pipe","sewer","drain"]):
+        return "Water Issue"
+    if any(k in L for k in ["wire","electric","transformer","cable","pole","power"]):
+        return "Electricity"
+    if any(k in L for k in ["road","street","pothole","asphalt","sidewalk","pavement"]):
+        return "Road Damage"
+    if any(k in L for k in ["smoke","smog","fume","fumes","exhaust","emission","pollution"]):
+        return "Pollution"
+    return None
 
 # --- helper: text category suggestion ---
 def suggest_category_from_text(text):
@@ -1113,7 +1271,41 @@ def Complaint():
         if final_category is None and text_cat is not None and (text_conf or 0) < TEXT_CAT_MIN_CONF and (image_conf or 0) < IMAGE_CAT_MIN_CONF:
             final_category = 'Other'
 
-        # Build complaint record
+        # Compute hashes/fingerprints once
+        text_fp = _normalize_text_fp(title, message, pincode)
+        img_md5 = _md5_file(save_path)
+        img_ph = _phash_file(save_path)
+
+        # Duplicate check with md5/phash/text fp
+        dup = _check_duplicate_complaint(email, title, message, pincode, filename,
+                                        pre_md5=img_md5, pre_phash=img_ph, pre_text_fp=text_fp)
+        if dup:
+            try:
+                flash(f"Possible duplicate of complaint #{dup.cid}. We did not create a new one.", "warning")
+            except Exception:
+                pass
+            return redirect(url_for('prcomplaint'))
+
+        # Additional ResNet50 classification and fusion
+        rn_label, rn_score = _resnet_predict(save_path)
+        rn_app = _map_imagenet_to_app(rn_label) if rn_label else None
+        # add to candidates if strong
+        candidates = []
+        if final_category:
+            # keep previous fused result with its score if known
+            base_score = fused_score if isinstance(fused_score, (float,int)) else 0.0
+            candidates.append((final_category, float(base_score)))
+        if rn_app and (rn_score or 0) >= RESNET_MIN_CONF:
+            candidates.append((rn_app, float(rn_score)))
+        if image_cat and (image_conf or 0) >= IMAGE_CAT_MIN_CONF:
+            candidates.append((image_cat, float(image_conf)))
+        if text_cat and (text_conf or 0) >= TEXT_CAT_MIN_CONF:
+            candidates.append((text_cat, float(text_conf)))
+        if candidates:
+            final_category, _ = max(candidates, key=lambda x: x[1])
+        if not final_category:
+            final_category = user_category or rn_app or image_cat or text_cat or 'Other'
+
         new_complaint = Complaints(
             email=email,
             title=title,
@@ -1123,7 +1315,10 @@ def Complaint():
             pincode=pincode,
             image=filename,
             ai_verified=ai_verified,
-            ai_confidence=ai_conf
+            ai_confidence=ai_conf,
+            image_md5=img_md5,
+            image_phash=img_ph,
+            text_fingerprint=text_fp
         )
         db.session.add(new_complaint)
         db.session.commit()
@@ -1252,8 +1447,10 @@ def admin_dashboard():
         .join(User, User.id == UserStats.user_id) \
         .order_by(UserStats.points.desc()) \
         .limit(10).all()
+    # Allow optional dedupe results injection
+    dedupe_candidates = request.args.get('dedupe')
     return render_template('admin_dashboard.html', comp=comp, ngos=ngos, assign_map=assign_map,
-                           top_ngos=top_ngos, top_users=top_users)
+                           top_ngos=top_ngos, top_users=top_users, dedupe_candidates=None)
 
 # update status route (admin)
 @app.route('/update_status/<int:cid>', methods=['POST'])
@@ -1262,6 +1459,10 @@ def update_status(cid):
     if not current_user.is_admin:
         abort(403)
     complaint = Complaints.query.get_or_404(cid)
+    # Do not allow status changes for duplicates
+    if getattr(complaint, 'duplicate_of', None) or complaint.status == 'Duplicate':
+        flash(f"Complaint #{cid} is marked as duplicate and cannot be updated.", "warning")
+        return redirect(url_for('admin_dashboard'))
     new_status = request.form.get('status')
     if new_status:
         prev_status = complaint.status
@@ -1297,6 +1498,162 @@ def update_status(cid):
             except Exception as e:
                 print("Failed to send admin-notification:", e)
 
+    return redirect(url_for('admin_dashboard'))
+
+# --- Dedupe review & actions ---
+@app.route('/admin/dedupe_review')
+@login_required
+def admin_dedupe_review():
+    if not current_user.is_admin:
+        abort(403)
+    # Build candidate groups
+    candidates = []
+    try:
+        # Text fingerprint groups
+        tf_groups = db.session.query(Complaints.text_fingerprint, func.count(Complaints.cid)) \
+            .filter(Complaints.text_fingerprint.isnot(None)) \
+            .group_by(Complaints.text_fingerprint).having(func.count(Complaints.cid) > 1) \
+            .order_by(func.count(Complaints.cid).desc()).limit(50).all()
+        for fp, cnt in tf_groups:
+            items = Complaints.query.filter_by(text_fingerprint=fp).order_by(Complaints.cid.desc()).all()
+            candidates.append({ 'type': 'text', 'key': fp, 'items': items })
+        # Image MD5 groups
+        md5_groups = db.session.query(Complaints.image_md5, func.count(Complaints.cid)) \
+            .filter(Complaints.image_md5.isnot(None)) \
+            .group_by(Complaints.image_md5).having(func.count(Complaints.cid) > 1) \
+            .order_by(func.count(Complaints.cid).desc()).limit(50).all()
+        for md5, cnt in md5_groups:
+            items = Complaints.query.filter_by(image_md5=md5).order_by(Complaints.cid.desc()).all()
+            candidates.append({ 'type': 'image_md5', 'key': md5, 'items': items })
+        # Perceptual hash near-duplicates (last 500)
+        recent = Complaints.query.filter(Complaints.image_phash.isnot(None)).order_by(Complaints.cid.desc()).limit(500).all()
+        rec_pairs = []
+        bucket = {}
+        for c in recent:
+            key = (c.image_phash or '')[:4]
+            bucket.setdefault(key, []).append(c)
+        for key, arr in bucket.items():
+            n = len(arr)
+            for i in range(n):
+                for j in range(i+1, n):
+                    a, b = arr[i], arr[j]
+                    try:
+                        if _hamming_hex(a.image_phash, b.image_phash) <= 5 and (not a.pincode or a.pincode == b.pincode):
+                            rec_pairs.append((a, b))
+                    except Exception:
+                        pass
+        if rec_pairs:
+            # flatten into candidate groups by pair
+            for a, b in rec_pairs[:100]:
+                candidates.append({ 'type': 'image_phash', 'key': f"{a.image_phash}~{b.image_phash}", 'items': [a, b] })
+    except Exception as e:
+        print('dedupe_review failed:', e)
+    comp = Complaints.query.order_by(Complaints.cid.desc()).all()
+    ngos = NGO.query.order_by(NGO.id.desc()).all()
+    top_ngos = db.session.query(NGO.name, NGOStats.points, NGOStats.level).join(NGO, NGO.id==NGOStats.ngo_id).order_by(NGOStats.points.desc()).limit(10).all()
+    top_users = db.session.query(User.username, UserStats.points, UserStats.level).join(User, User.id==UserStats.user_id).order_by(UserStats.points.desc()).limit(10).all()
+    return render_template('admin_dashboard.html', comp=comp, ngos=ngos, assign_map={}, top_ngos=top_ngos, top_users=top_users, dedupe_candidates=candidates)
+
+@app.route('/admin/mark_duplicate', methods=['POST'])
+@login_required
+def admin_mark_duplicate():
+    if not current_user.is_admin:
+        abort(403)
+    primary_id = request.form.get('primary_id', type=int)
+    dup_id = request.form.get('dup_id', type=int)
+    if not primary_id or not dup_id:
+        flash('Missing primary/duplicate ids', 'warning')
+        return redirect(url_for('admin_dedupe_review'))
+    dup = Complaints.query.get_or_404(dup_id)
+
+    updated = False
+    # Try ORM first (works if model had duplicate_of at startup)
+    try:
+        setattr(dup, 'duplicate_of', primary_id)
+        dup.status = 'Duplicate'
+        db.session.commit()
+        updated = True
+    except Exception:
+        db.session.rollback()
+    # Fallback: raw SQL in case ORM attribute missing
+    if not updated:
+        try:
+            db.session.execute(
+                text('UPDATE complaints SET duplicate_of = :primary_id, status = :status WHERE cid = :cid'),
+                { 'primary_id': primary_id, 'status': 'Duplicate', 'cid': dup_id }
+            )
+            db.session.commit()
+            updated = True
+        except Exception:
+            db.session.rollback()
+    if updated:
+        # Deduct 5 points from the complaint owner (once)
+        try:
+            u = User.query.filter_by(email=dup.email).first()
+            if u:
+                award_points_unique('user', u.id, f'duplicate_penalty:{dup.cid}', -5, { 'duplicate_of': primary_id, 'complaint_id': dup.cid })
+        except Exception:
+            pass
+        flash(f'Marked #{dup_id} as duplicate of #{primary_id} and deducted 5 points from the reporter', 'success')
+    else:
+        flash('Failed to mark duplicate. Ensure column exists and restart the server.', 'danger')
+
+    # Fallback: raw SQL in case ORM attribute missing
+    if not updated:
+        try:
+            db.session.execute(
+                text('UPDATE complaints SET duplicate_of = :primary_id, status = :status WHERE cid = :cid'),
+                { 'primary_id': primary_id, 'status': 'Duplicate', 'cid': dup_id }
+            )
+            db.session.commit()
+            updated = True
+        except Exception:
+            db.session.rollback()
+
+    if updated:
+        # Deduct 5 points from the complaint owner (once)
+        try:
+            u = User.query.filter_by(email=dup.email).first()
+            if u:
+                award_points_unique('user', u.id, f'duplicate_penalty:{dup.cid}', -5, { 'duplicate_of': primary_id, 'complaint_id': dup.cid })
+        except Exception:
+            pass
+        flash(f'Marked #{dup_id} as duplicate of #{primary_id} and deducted 5 points from the reporter', 'success')
+    else:
+        flash('Failed to mark duplicate. Ensure column exists and restart the server.', 'danger')
+
+    return redirect(url_for('admin_dedupe_review'))
+
+# ... (rest of the code remains the same)
+@app.route('/admin/backfill_hashes')
+@login_required
+def admin_backfill_hashes():
+    if not current_user.is_admin:
+        abort(403)
+    limit = request.args.get('limit', default=500, type=int)
+    q = Complaints.query.filter((Complaints.image_md5.is_(None)) | (Complaints.image_phash.is_(None)) | (Complaints.text_fingerprint.is_(None))).order_by(Complaints.cid.asc()).limit(limit)
+    count = 0
+    for c in q.all():
+        try:
+            # text fp
+            if not c.text_fingerprint:
+                c.text_fingerprint = _normalize_text_fp(getattr(c, 'title', None), getattr(c, 'message', None), getattr(c, 'pincode', None))
+            # image hashes
+            if c.image:
+                path = os.path.join(UPLOAD_FOLDER, c.image)
+                if not c.image_md5:
+                    c.image_md5 = _md5_file(path)
+                if not c.image_phash:
+                    c.image_phash = _phash_file(path)
+            count += 1
+        except Exception:
+            pass
+    try:
+        db.session.commit()
+        flash(f'Backfilled hashes for {count} complaints', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash('Backfill failed', 'danger')
     return redirect(url_for('admin_dashboard'))
 
 # --- edit route: admin only ---
