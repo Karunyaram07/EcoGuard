@@ -16,3 +16,9 @@ PyMySQL>=1.1
 # Dedupe helpers
 ImageHash>=4.3
 rapidfuzz>=3.4
+gunicorn>=21.0
+gevent>=23.9
+    
+
+
+    

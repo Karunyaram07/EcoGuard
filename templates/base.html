@@ -17,7 +17,7 @@
     <style>
       body {
         background-color: #eaf4ec;
-        background-image: url('https://images.unsplash.com/photo-1595290429614-88ba93221dba?ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8MTl8fGdyZWVuJTIwY2l0eXxlbnwwfDB8MHx8fDA%3D&auto=format&fit=crop&q=60&w=600');
+        
         background-size: cover;
         background-position: center;
         background-attachment: fixed;
@@ -30,6 +30,7 @@
         inset: 0;
         background: linear-gradient(to bottom right, rgba(255,255,255,0.45), rgba(255,255,255,0.15));
         pointer-events: none;
+        z-index: -1; /* push overlay behind all content */
       }
       /* translucent surfaces for readability */
       .card, .section-card, .dropdown-menu {
@@ -44,6 +45,12 @@
       .navbar.bg-success {
         background-color: rgba(25,135,84,0.88) !important;
         backdrop-filter: saturate(1.1) blur(6px);
+        position: relative;
+        z-index: 1050; /* above overlay */
+      }
+      .dropdown-menu {
+        position: absolute;
+        z-index: 1060; /* ensure dropdown appears above navbar and overlay */
       }
       .table {
         background: rgba(255,255,255,0.65);
