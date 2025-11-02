@@ -13,6 +13,7 @@
       integrity="sha384-TX8t27EcRE3e/ihU7zmQxVncDAy5uIKz4rEkgIXeMed4M0jlfIDPvg6uqKI2xXr2"
       crossorigin="anonymous"
     />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/portal.css') }}">
     {% block css %} {% endblock css %}
     <title>{% block title %}{% endblock title %}</title>
   </head>
@@ -64,8 +65,22 @@
             <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button"
                data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
               Welcome {{ current_ngo_name or current_user.username }}
+              {% if current_ngo_stats %}
+                <small class="text-light d-block">Level {{ current_ngo_stats.level }} • {{ current_ngo_stats.points }} pts</small>
+              {% elif current_user_stats %}
+                <small class="text-light d-block">Level {{ current_user_stats.level }} • {{ current_user_stats.points }} pts</small>
+              {% endif %}
             </a>
             <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+              {% if recent_ngo_badges or recent_user_badges %}
+                <h6 class="dropdown-header">Recent Badges</h6>
+                {% for code, name in (recent_ngo_badges or recent_user_badges) %}
+                  <a class="dropdown-item" href="#">
+                    <span class="badge badge-pill badge-info mr-2">🏅</span> {{ name }}
+                  </a>
+                {% endfor %}
+                <div class="dropdown-divider"></div>
+              {% endif %}
               <a class="dropdown-item" href="{{ url_for('logout') }}">Logout</a>
             </div>
           </li>

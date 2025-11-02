@@ -447,9 +447,13 @@ from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
 from flask_mail import Mail, Message
 from dotenv import load_dotenv
+from datetime import datetime
+from sqlalchemy.dialects.mysql import JSON, ENUM
 import os
 
+from sqlalchemy.dialects.mysql import JSON
 load_dotenv()  # Load all variables from .env
+
 
 
 # Optional AI imports (wrapped in try/except)
@@ -507,6 +511,281 @@ def save_proof(file):
     return fname
 
 # --- Models ---
+
+
+from datetime import datetime
+from sqlalchemy.dialects.mysql import JSON, ENUM
+
+class UserStats(db.Model):
+    __tablename__ = 'user_stats'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), unique=True, nullable=False)
+    points = db.Column(db.Integer, nullable=False, default=0)
+    level = db.Column(db.Integer, nullable=False, default=1)
+    streak_count = db.Column(db.Integer, nullable=False, default=0)
+    last_action_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class NGOStats(db.Model):
+    __tablename__ = 'ngo_stats'
+    id = db.Column(db.Integer, primary_key=True)
+    ngo_id = db.Column(db.Integer, db.ForeignKey('ngo.id'), unique=True, nullable=False)
+    points = db.Column(db.Integer, nullable=False, default=0)
+    level = db.Column(db.Integer, nullable=False, default=1)
+    streak_count = db.Column(db.Integer, nullable=False, default=0)
+    last_action_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class GamificationEvent(db.Model):
+    __tablename__ = 'gamification_events'
+    id = db.Column(db.Integer, primary_key=True)
+    actor_type = db.Column(ENUM('user', 'ngo'), nullable=False, index=True)
+    actor_id = db.Column(db.Integer, nullable=False, index=True)  # polymorphic; no FK to keep simple
+    action = db.Column(db.String(64), nullable=False, index=True)
+    points = db.Column(db.Integer, nullable=False, default=0)
+    meta = db.Column(JSON, nullable=True)  # MySQL 5.7+; else use db.Text
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+class Badge(db.Model):
+    __tablename__ = 'badges'
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(64), nullable=False, unique=True)
+    name = db.Column(db.String(128), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+
+class UserBadge(db.Model):
+    __tablename__ = 'user_badges'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    badge_id = db.Column(db.Integer, db.ForeignKey('badges.id'), nullable=False, index=True)
+    awarded_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (db.UniqueConstraint('user_id', 'badge_id', name='uq_user_badge'),)
+
+class NGOBadge(db.Model):
+    __tablename__ = 'ngo_badges'
+    id = db.Column(db.Integer, primary_key=True)
+    ngo_id = db.Column(db.Integer, db.ForeignKey('ngo.id'), nullable=False, index=True)
+    badge_id = db.Column(db.Integer, db.ForeignKey('badges.id'), nullable=False, index=True)
+    awarded_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (db.UniqueConstraint('ngo_id', 'badge_id', name='uq_ngo_badge'),)
+
+# Optional: add JSON field to Complaints to track idempotent awards
+# If your Complaints model is named Complaints and has table 'complaints'
+# and you are on MySQL 5.7+, otherwise use db.Text instead of JSON.
+def _ensure_points_awarded_column():
+    if not hasattr(Complaints, 'points_awarded'):
+        try:
+            db.engine.execute("ALTER TABLE complaints ADD COLUMN points_awarded JSON NULL")
+        except Exception:
+            # fallback if JSON not supported: TEXT
+            try:
+                db.engine.execute("ALTER TABLE complaints ADD COLUMN points_awarded TEXT NULL")
+            except Exception:
+                pass
+
+# ---------------- Gamification helpers ----------------
+
+def _calc_level(points: int) -> int:
+    try:
+        return max(1, points // 100 + 1)
+    except Exception:
+        return 1
+
+def _ensure_user_stats(user_id: int) -> 'UserStats':
+    us = UserStats.query.filter_by(user_id=user_id).first()
+    if not us:
+        us = UserStats(user_id=user_id, points=0, level=1, streak_count=0)
+        db.session.add(us)
+        db.session.flush()
+    return us
+
+def _ensure_ngo_stats(ngo_id: int) -> 'NGOStats':
+    ns = NGOStats.query.filter_by(ngo_id=ngo_id).first()
+    if not ns:
+        ns = NGOStats(ngo_id=ngo_id, points=0, level=1, streak_count=0)
+        db.session.add(ns)
+        db.session.flush()
+    return ns
+
+def award_points_unique(actor_type: str, actor_id: int, action_key: str, points: int, meta: dict | None = None):
+    # Idempotency: use action_key uniqueness per actor
+    existing = GamificationEvent.query.filter_by(actor_type=actor_type, actor_id=actor_id, action=action_key).first()
+    if existing:
+        return False
+    ev = GamificationEvent(actor_type=actor_type, actor_id=actor_id, action=action_key, points=points, meta=meta or {})
+    db.session.add(ev)
+    if actor_type == 'user':
+        stats = _ensure_user_stats(actor_id)
+    else:
+        stats = _ensure_ngo_stats(actor_id)
+    stats.points = (stats.points or 0) + int(points)
+    stats.level = _calc_level(stats.points)
+    stats.last_action_at = datetime.utcnow()
+    # badges hook: implement thresholds here
+    try:
+        maybe_award_badges(actor_type, actor_id)
+    except Exception as _e:
+        pass
+    db.session.commit()
+    return True
+
+def maybe_award_badges(actor_type: str, actor_id: int):
+    """Award badges based on accumulated events/stats.
+    Users: first_complaint, verified_reporter (5 AI verified), first_resolution, streak_3/streak_7.
+    NGOs: rapid_responder (3 fast resolves), resolver_bronze/silver/gold by total resolves.
+    """
+    if actor_type == 'user':
+        # First complaint: any complaint_submit:% event
+        submit_count = (
+            GamificationEvent.query
+            .filter_by(actor_type='user', actor_id=actor_id)
+            .filter(GamificationEvent.action.like('complaint_submit:%'))
+            .count()
+        )
+        if submit_count >= 1:
+            badge = Badge.query.filter_by(code='first_complaint').first()
+            if badge and not UserBadge.query.filter_by(user_id=actor_id, badge_id=badge.id).first():
+                db.session.add(UserBadge(user_id=actor_id, badge_id=badge.id))
+                u = User.query.get(actor_id)
+                if u and u.email:
+                    try:
+                        send_user_email(u.email,
+                                        'You earned a badge: First Complaint',
+                                        'Great start! You earned the "First Complaint" badge.')
+                    except Exception:
+                        pass
+        # Verified Reporter: 5 AI-verified complaints
+        ai_verified_count = (
+            GamificationEvent.query
+            .filter_by(actor_type='user', actor_id=actor_id)
+            .filter(GamificationEvent.action.like('ai_verified:%'))
+            .count()
+        )
+        if ai_verified_count >= 5:
+            badge = Badge.query.filter_by(code='verified_reporter').first()
+            if badge and not UserBadge.query.filter_by(user_id=actor_id, badge_id=badge.id).first():
+                db.session.add(UserBadge(user_id=actor_id, badge_id=badge.id))
+                u = User.query.get(actor_id)
+                if u and u.email:
+                    try:
+                        send_user_email(u.email,
+                                        'You earned a badge: Verified Reporter',
+                                        'Congrats! You earned the "Verified Reporter" badge for 5 AI-verified complaints.')
+                    except Exception:
+                        pass
+        # First Resolution: any user_resolved:% event
+        resolved_count = (
+            GamificationEvent.query
+            .filter_by(actor_type='user', actor_id=actor_id)
+            .filter(GamificationEvent.action.like('user_resolved:%'))
+            .count()
+        )
+        if resolved_count >= 1:
+            badge = Badge.query.filter_by(code='first_resolution').first()
+            if badge and not UserBadge.query.filter_by(user_id=actor_id, badge_id=badge.id).first():
+                db.session.add(UserBadge(user_id=actor_id, badge_id=badge.id))
+                u = User.query.get(actor_id)
+                if u and u.email:
+                    try:
+                        send_user_email(u.email,
+                                        'You earned a badge: First Resolution',
+                                        'Awesome! A complaint you filed was resolved. Badge unlocked!')
+                    except Exception:
+                        pass
+        # Streaks: simple daily streaks (3 and 7 days) based on recent submit events
+        from sqlalchemy import func
+        today = datetime.utcnow().date()
+        # count distinct dates for last N days
+        def distinct_days(n):
+            start = datetime.combine(today - timedelta(days=n-1), datetime.min.time())
+            rows = (
+                db.session.query(func.date(GamificationEvent.created_at))
+                .filter_by(actor_type='user', actor_id=actor_id)
+                .filter(GamificationEvent.action.like('complaint_submit:%'))
+                .filter(GamificationEvent.created_at >= start)
+                .distinct().all()
+            )
+            return len(rows)
+        if distinct_days(3) >= 3:
+            badge = Badge.query.filter_by(code='streak_3').first()
+            if badge and not UserBadge.query.filter_by(user_id=actor_id, badge_id=badge.id).first():
+                db.session.add(UserBadge(user_id=actor_id, badge_id=badge.id))
+        if distinct_days(7) >= 7:
+            badge = Badge.query.filter_by(code='streak_7').first()
+            if badge and not UserBadge.query.filter_by(user_id=actor_id, badge_id=badge.id).first():
+                db.session.add(UserBadge(user_id=actor_id, badge_id=badge.id))
+    else:
+        # NGO badges
+        # Rapid responder: 3 resolved_fast events
+        fast_count = (
+            GamificationEvent.query
+            .filter_by(actor_type='ngo', actor_id=actor_id)
+            .filter(GamificationEvent.action.like('resolved_fast:%'))
+            .count()
+        )
+        if fast_count >= 3:
+            badge = Badge.query.filter_by(code='rapid_responder').first()
+            if badge and not NGOBadge.query.filter_by(ngo_id=actor_id, badge_id=badge.id).first():
+                db.session.add(NGOBadge(ngo_id=actor_id, badge_id=badge.id))
+        # Resolver tiers by total resolved events
+        total_resolved = (
+            GamificationEvent.query
+            .filter_by(actor_type='ngo', actor_id=actor_id)
+            .filter(GamificationEvent.action.like('resolved:%'))
+            .count()
+        )
+        tiers = [
+            ('resolver_bronze', 10),
+            ('resolver_silver', 50),
+            ('resolver_gold', 200),
+        ]
+        for code, threshold in tiers:
+            if total_resolved >= threshold:
+                badge = Badge.query.filter_by(code=code).first()
+                if badge and not NGOBadge.query.filter_by(ngo_id=actor_id, badge_id=badge.id).first():
+                    db.session.add(NGOBadge(ngo_id=actor_id, badge_id=badge.id))
+
+# Initial badges seed
+
+def seed_badges():
+    try:
+        existing = {b.code for b in Badge.query.all()}
+        data = [
+            ('first_complaint','First Complaint','Submitted your first complaint'),
+            ('verified_reporter','Verified Reporter','5 AI-verified complaints'),
+            ('first_resolution','First Resolution','A complaint you filed was resolved'),
+            ('streak_3','Streak 3','Submitted complaints 3 days in a row'),
+            ('streak_7','Streak 7','Submitted complaints 7 days in a row'),
+            ('rapid_responder','Rapid Responder','NGO resolved 3 cases within 72 hours'),
+            ('resolver_bronze','Resolver Bronze','NGO resolved 10 cases'),
+            ('resolver_silver','Resolver Silver','NGO resolved 50 cases'),
+            ('resolver_gold','Resolver Gold','NGO resolved 200 cases')
+        ]
+        for code, name, desc in data:
+            if code not in existing:
+                db.session.add(Badge(code=code, name=name, description=desc))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+# Ensure tables exist, then schema tweaks and badge seed once on first incoming request
+_BOOTSTRAP_DONE = False
+
+@app.before_request
+def _bootstrap_on_first_request():
+    global _BOOTSTRAP_DONE
+    if _BOOTSTRAP_DONE:
+        return
+    try:
+        db.create_all()
+    except Exception:
+        pass
+    _ensure_points_awarded_column()
+    seed_badges()
+    _BOOTSTRAP_DONE = True
+
 class Test(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100))
@@ -535,7 +814,7 @@ class Complaints(db.Model):
     ai_confidence = db.Column(db.Float, nullable=True)
     ai_notified = db.Column(db.Boolean, default=False)
     admin_notified = db.Column(db.Boolean, default=False)
-
+    points_awarded = db.Column(JSON, nullable=True)  # if MySQL JSON not supported, we will fallback to TEXT in DB
 class NGO(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
@@ -849,6 +1128,23 @@ def Complaint():
         db.session.add(new_complaint)
         db.session.commit()
 
+        # Log a zero-point submit event to enable badges like first_complaint and streaks
+        try:
+            u = User.query.filter_by(email=email).first()
+            if u:
+                award_points_unique('user', u.id, f'complaint_submit:{new_complaint.cid}', 0, { 'complaint_id': new_complaint.cid })
+        except Exception:
+            pass
+
+        # Award user points only on AI verification (idempotent per complaint)
+        if ai_verified:
+            try:
+                u = User.query.filter_by(email=email).first()
+                if u:
+                    award_points_unique('user', u.id, f'ai_verified:{new_complaint.cid}', 10, { 'complaint_id': new_complaint.cid })
+            except Exception:
+                pass
+
         # Auto-assign to NGO by pincode+category
         try:
             auto_assign_to_ngo(new_complaint)
@@ -879,7 +1175,16 @@ def prcomplaint():
     if current_user.is_admin:
         return redirect(url_for('admin_dashboard'))
     comp = Complaints.query.filter_by(email=current_user.email).order_by(Complaints.cid.desc()).all()
-    return render_template('prcomplaint.html', comp=comp)
+    # fetch all badges earned by this user
+    user_badges = (
+        db.session.query(Badge.code, Badge.name, Badge.description)
+        .join(UserBadge, UserBadge.badge_id == Badge.id)
+        .join(User, User.id == UserBadge.user_id)
+        .filter(User.id == current_user.id)
+        .order_by(UserBadge.awarded_at.desc())
+        .all()
+    )
+    return render_template('prcomplaint.html', comp=comp, user_badges=user_badges)
 
 # ---------------- template context: expose NGO name for navbar ----------------
 @app.context_processor
@@ -893,6 +1198,22 @@ def inject_current_ngo_name():
     except Exception:
         pass
     return dict(current_ngo_name=ngo_name)
+
+@app.context_processor
+def inject_gamification_stats():
+    us = None
+    ns = None
+    try:
+        if current_user.is_authenticated:
+            if getattr(current_user, 'is_ngo', False):
+                ngo = NGO.query.filter_by(user_id=current_user.id).first()
+                if ngo:
+                    ns = NGOStats.query.filter_by(ngo_id=ngo.id).first()
+            else:
+                us = UserStats.query.filter_by(user_id=current_user.id).first()
+    except Exception:
+        pass
+    return dict(current_user_stats=us, current_ngo_stats=ns)
 
 # ---------------- admin dashboard ----------------
 @app.route('/admin_dashboard', methods=['GET', 'POST'])
@@ -922,7 +1243,17 @@ def admin_dashboard():
                     'updated_at': a.updated_at,
                     'assignment_id': a.id,
                 }
-    return render_template('admin_dashboard.html', comp=comp, ngos=ngos, assign_map=assign_map)
+    # Leaderboards (top 10)
+    top_ngos = db.session.query(NGO.name, NGOStats.points, NGOStats.level) \
+        .join(NGO, NGO.id == NGOStats.ngo_id) \
+        .order_by(NGOStats.points.desc()) \
+        .limit(10).all()
+    top_users = db.session.query(User.username, UserStats.points, UserStats.level) \
+        .join(User, User.id == UserStats.user_id) \
+        .order_by(UserStats.points.desc()) \
+        .limit(10).all()
+    return render_template('admin_dashboard.html', comp=comp, ngos=ngos, assign_map=assign_map,
+                           top_ngos=top_ngos, top_users=top_users)
 
 # update status route (admin)
 @app.route('/update_status/<int:cid>', methods=['POST'])
@@ -936,10 +1267,25 @@ def update_status(cid):
         prev_status = complaint.status
         complaint.status = new_status
         db.session.commit()
+        # Award user points only upon AI verification status
+        if new_status == 'Verified':
+            try:
+                u = User.query.filter_by(email=complaint.email).first()
+                if u:
+                    award_points_unique('user', u.id, f'ai_verified:{complaint.cid}', 10, { 'complaint_id': complaint.cid })
+            except Exception:
+                pass
         flash(f"Complaint #{cid} status updated to '{new_status}'", "success")
 
         # If admin sets a status that should notify user (for example "Verified" or "Resolved"), email user
         # We'll treat "Verified" and "Resolved" as statuses that trigger email
+        if new_status == 'Resolved':
+            try:
+                u = User.query.filter_by(email=complaint.email).first()
+                if u:
+                    award_points_unique('user', u.id, f'user_resolved:{complaint.cid}', 0, { 'complaint_id': complaint.cid })
+            except Exception:
+                pass
         notify_statuses = {"Verified", "Resolved"}
         if new_status in notify_statuses and not complaint.admin_notified:
             try:
@@ -1109,6 +1455,11 @@ def ngo_accept_assignment(assign_id):
     if not a.due_at:
         a.due_at = datetime.utcnow() + timedelta(days=3)
     db.session.commit()
+    # Gamification: NGO +5 on accepting (idempotent per assignment)
+    try:
+        award_points_unique('ngo', ngo.id, f"assignment_accept:{a.id}", 5, { 'assignment_id': a.id, 'complaint_id': a.complaint_id })
+    except Exception:
+        pass
     flash('Assignment accepted', 'success')
     return redirect(url_for('ngo_dashboard_view'))
 
@@ -1142,6 +1493,29 @@ def ngo_update_status(assign_id):
     if notes:
         a.notes = notes
     db.session.commit()
+    # Gamification awards
+    try:
+        if new_status == 'In-Progress':
+            award_points_unique('ngo', ngo.id, f"inprogress:{a.id}", 5, { 'assignment_id': a.id, 'complaint_id': a.complaint_id })
+        if new_status == 'Resolved':
+            # base points
+            award_points_unique('ngo', ngo.id, f"resolved:{a.id}", 25, { 'assignment_id': a.id, 'complaint_id': a.complaint_id })
+            # fast bonus if resolved within 72h from assigned/accepted
+            base_time = a.accepted_at or a.assigned_at
+            fast = False
+            if base_time:
+                elapsed = datetime.utcnow() - base_time
+                if elapsed.total_seconds() <= 72 * 3600:
+                    award_points_unique('ngo', ngo.id, f"resolved_fast:{a.id}", 10, { 'assignment_id': a.id, 'complaint_id': a.complaint_id, 'hours': elapsed.total_seconds()/3600 })
+                    fast = True
+            # Log a zero-point user resolution event for badge tracking
+            comp = Complaints.query.get(a.complaint_id)
+            if comp:
+                u = User.query.filter_by(email=comp.email).first()
+                if u:
+                    award_points_unique('user', u.id, f'user_resolved:{comp.cid}', 0, { 'complaint_id': comp.cid, 'fast': fast })
+    except Exception:
+        pass
     # Notify complaint user concisely on status changes handled by NGO
     if new_status in ('Resolved', 'In-Progress'):
         comp = Complaints.query.get(a.complaint_id)

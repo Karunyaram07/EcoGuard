@@ -54,6 +54,47 @@
     </div>
   </div>
 
+  <div class="container mb-4">
+    <div class="row g-3">
+      <div class="col-md-6">
+        <div class="card shadow-sm border-0">
+          <div class="card-header bg-white fw-bold">Top NGOs</div>
+          <ul class="list-group list-group-flush">
+            {% if top_ngos %}
+              {% for name, pts, lvl in top_ngos %}
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>{{ name }}</span>
+                <span class="badge bg-primary">Lvl {{ lvl }}</span>
+                <span class="badge bg-success">{{ pts }} pts</span>
+              </li>
+              {% endfor %}
+            {% else %}
+              <li class="list-group-item text-muted">No NGO stats yet</li>
+            {% endif %}
+          </ul>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="card shadow-sm border-0">
+          <div class="card-header bg-white fw-bold">Top Users</div>
+          <ul class="list-group list-group-flush">
+            {% if top_users %}
+              {% for uname, pts, lvl in top_users %}
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>{{ uname }}</span>
+                <span class="badge bg-primary">Lvl {{ lvl }}</span>
+                <span class="badge bg-success">{{ pts }} pts</span>
+              </li>
+              {% endfor %}
+            {% else %}
+              <li class="list-group-item text-muted">No user stats yet</li>
+            {% endif %}
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="container">
     <table class="table table-bordered table-striped table-hover align-middle">
       <thead class="table-dark text-center">

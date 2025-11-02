@@ -1,5 +1,8 @@
 {% extends 'base.html' %}
 {% block title %}Preview Complaints{% endblock title %}
+
+{% block css %}{% endblock css %}
+
 {% block body %}
 
 {% with messages = get_flashed_messages(with_categories=true) %}
@@ -16,47 +19,84 @@
 {% endwith %}
 
 <div class="container mt-4">
+  <div class="mb-4 section-card">
+    <div class="section-header">
+      <span class="icon">🏅</span>
+      <h5 class="m-0">Your Badges</h5>
+    </div>
+    <div class="p-3">
+      <div class="row badges-grid">
+        {% if user_badges and user_badges|length > 0 %}
+          {% for code, name, desc in user_badges %}
+          <div class="col-6 col-md-3 col-lg-2 mb-3 text-center">
+            <div class="badge-card card border-0 shadow-sm h-100">
+              <div class="card-body p-2 d-flex flex-column align-items-center text-center">
+                <img src="{{ url_for('static', filename='badges/' ~ code ~ '.jpeg') }}" alt="{{ name }}" class="badge-icon mb-2"
+                     onerror="if(this.src.endsWith('.jpeg')){this.src=this.src.replace('.jpeg','.jpg');}
+                              else if(this.src.endsWith('.jpg')){this.src=this.src.replace('.jpg','.png');}
+                              else {this.onerror=null; this.src='{{ url_for('static', filename='badges/default.png') }}';}">
+                <div class="badge-name" data-toggle="tooltip" title="{{ name }}">{{ name }}</div>
+                <div class="badge-desc" data-toggle="tooltip" title="{{ desc }}">{{ desc }}</div>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="col-12 text-muted">No badges yet. Submit and verify complaints to earn badges!</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
   <h3 class="text-center mb-3">Your Submitted Complaints</h3>
 
-  <table class="table table-bordered table-hover align-middle">
-    <thead class="thead-light">
-      <tr class="text-center">
-        <th scope="col">CID</th>
-        <th scope="col">Email</th>
-        <th scope="col">Message</th>
-        <th scope="col">Date</th>
-        <th scope="col">Image</th>
-        <th scope="col">Category</th>
-        <th scope="col">AI Verification</th>
-      </tr>
-    </thead>
+  <div class="table-responsive">
+    <table class="table table-bordered table-hover align-middle mb-0">
+      <thead class="thead-light">
+        <tr class="text-center">
+          <th scope="col">CID</th>
+          <th scope="col">Email</th>
+          <th scope="col">Message</th>
+          <th scope="col">Date</th>
+          <th scope="col">Image</th>
+          <th scope="col">Category</th>
+          <th scope="col">AI Verification</th>
+        </tr>
+      </thead>
 
-    <tbody>
-      {% for post in comp %}
-      <tr>
-        <td class="text-center">{{ post.cid }}</td>
-        <td>{{ post.email }}</td>
-        <td>{{ post.title or post.message[:80] }}</td>
-        <td>{{ post.date }}</td>
-        <td class="text-center">
-          {% if post.image %}
-            <a href="{{ url_for('static', filename='uploads/' ~ post.image) }}" target="_blank">View</a>
-          {% else %}
-            N/A
-          {% endif %}
-        </td>
-        <td>{{ post.category or '—' }}</td>
-        <td class="text-center">
-          {% if post.ai_verified %}
-            <span class="badge bg-success">Verified ({{ '%.2f'|format(post.ai_confidence or 0) }})</span>
-          {% else %}
-            <span class="badge bg-danger">Unverified</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+      <tbody>
+        {% for post in comp %}
+        <tr>
+          <td class="text-center">{{ post.cid }}</td>
+          <td>{{ post.email }}</td>
+          <td>{{ post.title or post.message[:80] }}</td>
+          <td>{{ post.date }}</td>
+          <td class="text-center">
+            {% if post.image %}
+              <a href="{{ url_for('static', filename='uploads/' ~ post.image) }}" target="_blank">View</a>
+            {% else %}
+              N/A
+            {% endif %}
+          </td>
+          <td>{{ post.category or '—' }}</td>
+          <td class="text-center">
+            {% if post.ai_verified %}
+              <span class="badge bg-success">Verified ({{ '%.2f'|format(post.ai_confidence or 0) }})</span>
+            {% else %}
+              <span class="badge bg-danger">Unverified</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
 </div>
+
+<script>
+  // enable tooltips for names and descriptions
+  $(function () { $('[data-toggle="tooltip"]').tooltip(); })
+</script>
 
 {% endblock body %}
