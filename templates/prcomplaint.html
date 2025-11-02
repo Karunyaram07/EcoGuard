@@ -67,7 +67,12 @@
       <tbody>
         {% for post in comp %}
         <tr>
-          <td class="text-center">{{ post.cid }}</td>
+          <td class="text-center">
+            {{ post.cid }}
+            {% if post.status == 'Duplicate' or post.duplicate_of %}
+              <div><span class="badge bg-secondary">Duplicate{% if post.duplicate_of %} of #{{ post.duplicate_of }}{% endif %}</span></div>
+            {% endif %}
+          </td>
           <td>{{ post.email }}</td>
           <td>{{ post.title or post.message[:80] }}</td>
           <td>{{ post.date }}</td>

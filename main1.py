@@ -1564,7 +1564,19 @@ def admin_mark_duplicate():
     if not primary_id or not dup_id:
         flash('Missing primary/duplicate ids', 'warning')
         return redirect(url_for('admin_dedupe_review'))
+    if primary_id == dup_id:
+        flash('Cannot mark a complaint as duplicate of itself.', 'warning')
+        return redirect(url_for('admin_dedupe_review'))
     dup = Complaints.query.get_or_404(dup_id)
+    # prevent re-marking already duplicate (use duplicate_of as source of truth)
+    if getattr(dup, 'duplicate_of', None):
+        flash(f'Complaint #{dup_id} is already marked as a duplicate.', 'info')
+        return redirect(url_for('admin_dedupe_review'))
+    # prevent using a duplicate as primary (use duplicate_of as source of truth)
+    primary = Complaints.query.get_or_404(primary_id)
+    if getattr(primary, 'duplicate_of', None):
+        flash(f'Cannot use duplicate complaint #{primary_id} as the primary.', 'warning')
+        return redirect(url_for('admin_dedupe_review'))
 
     updated = False
     # Try ORM first (works if model had duplicate_of at startup)
@@ -1572,6 +1584,7 @@ def admin_mark_duplicate():
         setattr(dup, 'duplicate_of', primary_id)
         dup.status = 'Duplicate'
         db.session.commit()
+        db.session.expire_all()
         updated = True
     except Exception:
         db.session.rollback()
@@ -1583,6 +1596,7 @@ def admin_mark_duplicate():
                 { 'primary_id': primary_id, 'status': 'Duplicate', 'cid': dup_id }
             )
             db.session.commit()
+            db.session.expire_all()
             updated = True
         except Exception:
             db.session.rollback()
@@ -1594,9 +1608,21 @@ def admin_mark_duplicate():
                 award_points_unique('user', u.id, f'duplicate_penalty:{dup.cid}', -5, { 'duplicate_of': primary_id, 'complaint_id': dup.cid })
         except Exception:
             pass
+        # Email reporter with info and portal link
+        try:
+            portal_link = url_for('prcomplaint', _external=True)
+            send_user_email(
+                dup.email,
+                f"Your complaint #{dup.cid} marked as duplicate",
+                f"Your complaint (ID: {dup.cid}) was marked as a duplicate of complaint #{primary_id}. You can review your complaints here: {portal_link}"
+            )
+        except Exception:
+            pass
         flash(f'Marked #{dup_id} as duplicate of #{primary_id} and deducted 5 points from the reporter', 'success')
+        return redirect(url_for('admin_dashboard'))
     else:
         flash('Failed to mark duplicate. Ensure column exists and restart the server.', 'danger')
+        return redirect(url_for('admin_dedupe_review'))
 
     # Fallback: raw SQL in case ORM attribute missing
     if not updated:
@@ -1654,6 +1680,57 @@ def admin_backfill_hashes():
     except Exception as e:
         db.session.rollback()
         flash('Backfill failed', 'danger')
+    return redirect(url_for('admin_dashboard'))
+
+# --- Undo duplicate ---
+@app.route('/admin/undo_duplicate', methods=['POST'])
+@login_required
+def admin_undo_duplicate():
+    if not current_user.is_admin:
+        abort(403)
+    dup_id = request.form.get('dup_id', type=int)
+    if not dup_id:
+        flash('Missing duplicate id', 'warning')
+        return redirect(url_for('admin_dashboard'))
+    c = Complaints.query.get_or_404(dup_id)
+    if not (getattr(c, 'duplicate_of', None) or getattr(c, 'status', None) == 'Duplicate'):
+        flash(f'Complaint #{dup_id} is not marked as duplicate.', 'info')
+        return redirect(url_for('admin_dashboard'))
+
+    updated = False
+    # Try ORM
+    try:
+        setattr(c, 'duplicate_of', None)
+        c.status = 'Submitted'
+        db.session.commit()
+        db.session.expire_all()
+        updated = True
+    except Exception:
+        db.session.rollback()
+    if not updated:
+        # Raw SQL fallback
+        try:
+            db.session.execute(
+                text('UPDATE complaints SET duplicate_of = NULL, status = :status WHERE cid = :cid'),
+                { 'status': 'Submitted', 'cid': dup_id }
+            )
+            db.session.commit()
+            db.session.expire_all()
+            updated = True
+        except Exception:
+            db.session.rollback()
+
+    if updated:
+        # Refund 5 points (idempotent)
+        try:
+            u = User.query.filter_by(email=c.email).first()
+            if u:
+                award_points_unique('user', u.id, f'duplicate_refund:{c.cid}', +5, { 'complaint_id': c.cid })
+        except Exception:
+            pass
+        flash(f'Restored complaint #{dup_id} from duplicate status and refunded 5 points to reporter', 'success')
+    else:
+        flash('Failed to undo duplicate.', 'danger')
     return redirect(url_for('admin_dashboard'))
 
 # --- edit route: admin only ---

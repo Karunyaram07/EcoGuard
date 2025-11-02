@@ -8,6 +8,19 @@
 
   <h2 class="text-center mb-4">Admin Dashboard</h2>
 
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="container mb-3">
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
   <!-- Dedupe review + backfill controls -->
   {% if current_user.is_admin %}
   <div class="container mb-4">
@@ -66,17 +79,21 @@
                         {% endif %}
                       </td>
                       <td>
+                        {% if c.status == 'Duplicate' or c.duplicate_of %}
+                          <button class="btn btn-sm btn-secondary" type="button" disabled>Already duplicate</button>
+                        {% else %}
                         <form action="{{ url_for('admin_mark_duplicate') }}" method="post" class="form-inline">
                           <input type="hidden" name="dup_id" value="{{ c.cid }}" />
                           <select name="primary_id" class="form-control form-control-sm me-2">
                             {% for p in grp['items'] %}
-                              {% if p.cid != c.cid %}
+                              {% if p.cid != c.cid and not p.duplicate_of %}
                                 <option value="{{ p.cid }}">#{{ p.cid }}</option>
                               {% endif %}
                             {% endfor %}
                           </select>
                           <button class="btn btn-sm btn-danger" type="submit">Mark duplicate</button>
                         </form>
+                        {% endif %}
                       </td>
                     </tr>
                     {% endfor %}
@@ -201,7 +218,18 @@
       <tbody>
         {% for c in comp %}
         <tr>
-          <td class="text-center">{{ c.cid }}</td>
+          <td class="text-center">
+            {{ c.cid }}
+            {% if c.status == 'Duplicate' or c.duplicate_of %}
+              <div>
+                {% if c.duplicate_of %}
+                  <a class="badge bg-secondary text-decoration-none" href="#complaint-{{ c.duplicate_of }}">Duplicate of #{{ c.duplicate_of }}</a>
+                {% else %}
+                  <span class="badge bg-secondary">Duplicate</span>
+                {% endif %}
+              </div>
+            {% endif %}
+          </td>
           <td>{{ c.email }}</td>
           <td>{{ c.title or c.message[:100] }}</td>
           <td>{{ c.date }}</td>
@@ -239,7 +267,10 @@
           </td>
           <td>
             {% if c.status == 'Duplicate' or c.duplicate_of %}
-              <div class="text-muted small">Duplicate complaints cannot be updated.</div>
+              <form method="POST" action="{{ url_for('admin_undo_duplicate') }}" class="d-flex justify-content-center">
+                <input type="hidden" name="dup_id" value="{{ c.cid }}">
+                <button type="submit" class="btn btn-outline-secondary btn-sm">Undo duplicate</button>
+              </form>
             {% else %}
             <form method="POST" action="{{ url_for('update_status', cid=c.cid) }}" class="d-flex justify-content-center">
               <select name="status" class="form-select form-select-sm w-auto me-2">
