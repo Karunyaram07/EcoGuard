@@ -14,6 +14,47 @@
       crossorigin="anonymous"
     />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/portal.css') }}">
+    <style>
+      body {
+        background-color: #eaf4ec;
+        background-image: url('https://images.unsplash.com/photo-1595290429614-88ba93221dba?ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8MTl8fGdyZWVuJTIwY2l0eXxlbnwwfDB8MHx8fDA%3D&auto=format&fit=crop&q=60&w=600');
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+        position: relative;
+        min-height: 100vh;
+      }
+      body::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        background: linear-gradient(to bottom right, rgba(255,255,255,0.45), rgba(255,255,255,0.15));
+        pointer-events: none;
+      }
+      /* translucent surfaces for readability */
+      .card, .section-card, .dropdown-menu {
+        background: rgba(255,255,255,0.78);
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.10);
+        backdrop-filter: blur(6px);
+      }
+      .card, .section-card {
+        background: rgba(255,255,255,0.65);
+      }
+      .navbar.bg-success {
+        background-color: rgba(25,135,84,0.88) !important;
+        backdrop-filter: saturate(1.1) blur(6px);
+      }
+      .table {
+        background: rgba(255,255,255,0.65);
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.10);
+        backdrop-filter: blur(6px);
+      }
+      .table th, .table td {
+        border: none;
+      }
+    </style>
     {% block css %} {% endblock css %}
     <title>{% block title %}{% endblock title %}</title>
   </head>
