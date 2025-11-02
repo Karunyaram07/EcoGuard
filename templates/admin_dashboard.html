@@ -17,7 +17,8 @@
       content: '';
       position: fixed;
       inset: 0;
-      background: linear-gradient(to bottom right, rgba(0,0,0,0.28), rgba(0,0,0,0.45));
+      /* lighten overlay for maximum clarity */
+      background: linear-gradient(to bottom right, rgba(255,255,255,0.15), rgba(255,255,255,0.05));
       pointer-events: none;
     }
     .container, .card, .section-card, .dropdown-menu, .accordion, .table {
@@ -27,10 +28,10 @@
     }
     /* Solid panel for table section to isolate from background image */
     .table-panel {
-      background: #ffffff !important;
-      border: 1px solid rgba(0,0,0,0.08);
+      background: #ffffff !important; /* pure white */
+      border: 1px solid rgba(0,0,0,0.06);
       border-radius: 14px;
-      box-shadow: 0 12px 30px rgba(0,0,0,0.12);
+      box-shadow: 0 8px 20px rgba(0,0,0,0.10); /* softer shadow for brighter feel */
       padding: 1.25rem 1.5rem;
     }
     body, .table {
@@ -45,16 +46,16 @@
       box-shadow: 0 8px 24px rgba(0,0,0,0.10);
     }
     .table thead {
-      background: #f8fafc !important;
+      background: #ffffff !important; /* brightest header */
     }
     .table thead th {
-      color: #334155; /* softer slate */
+      color: #0b1220; /* strong readable text */
       font-weight: 600;
       border-bottom: 1px solid rgba(0,0,0,0.08);
     }
-    .table-head-light th { background: #f8fafc !important; color: #334155 !important; }
+    .table-head-light th { background: #ffffff !important; color: #0b1220 !important; }
     .table tbody tr { background: #ffffff; }
-    .table tbody tr:hover { background: #fafbff; }
+    .table tbody tr:hover { background: #fdfdff; }
     .table td, .table th {
       color: #0b1220;
       border: 0;
