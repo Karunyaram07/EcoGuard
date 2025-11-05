@@ -1,24 +1,2 @@
-Flask>=2.3
-Flask-Login>=0.6
-Flask-SQLAlchemy>=3.1
-Flask-Mail>=0.9
-Werkzeug>=2.3
-Jinja2>=3.1
-pillow>=10.0
-transformers>=4.41
-torch         # Or install a CPU-only build like "torch==2.x+cpu" appropriate for your platform
-torchvision
-python-dotenv>=1.0
-
-# Database driver
-PyMySQL>=1.1
-
-# Dedupe helpers
-ImageHash>=4.3
-rapidfuzz>=3.4
-gunicorn>=21.0
-gevent>=23.9
-    
-
-
-    
+Flask
+SQLAlchemy
